@@ -351,7 +351,7 @@ if ACTIVITY:
             "../scripts/build_activity_tmm_table.py"
 
 
-    rule build_regulatory_h3k27ac_windows:
+    rule build_activity_h3k27ac_windows:
         input:
             master=str(ACTIVITY["master"]["master_bed"]),
             summits=str(ACTIVITY["master"]["summits_bed"]),
@@ -360,14 +360,14 @@ if ACTIVITY:
             script=str(REPO_ROOT / "src" / "make_regulatory_windows.py"),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
         output:
-            table=ACTIVITY_REGULATORY_WINDOWS,
-            bed=ACTIVITY_REGULATORY_WINDOWS_BED
+            table=ACTIVITY_H3K27AC_WINDOWS,
+            bed=ACTIVITY_H3K27AC_WINDOWS_BED
         resources:
             mem_mb=2000
         conda:
             "../envs/reporting.yaml"
         log:
-            f"{RESULT_ROOT}/logs/activity/catalog/windows.log"
+            f"{RESULT_ROOT}/logs/activity/quantification/h3k27ac-windows.log"
         shell:
             "mkdir -p $(dirname {output.table:q}) $(dirname {log:q}) && "
             "python {input.script:q} --master-bed {input.master:q} "
@@ -377,17 +377,17 @@ if ACTIVITY:
             "> {log:q} 2>&1"
 
 
-    rule count_regulatory_h3k27ac_windows:
+    rule count_activity_h3k27ac_windows:
         input:
             units=lambda wc: ACTIVITY_UNIT_BEDS[wc.library],
             total=lambda wc: ACTIVITY_UNIT_COUNTS[wc.library],
-            windows=ACTIVITY_REGULATORY_WINDOWS,
-            windows_bed=ACTIVITY_REGULATORY_WINDOWS_BED,
+            windows=ACTIVITY_H3K27AC_WINDOWS,
+            windows_bed=ACTIVITY_H3K27AC_WINDOWS_BED,
             chrom_sizes=str(REFERENCE["chrom_sizes"]),
             script=str(REPO_ROOT / "src" / "format_regulatory_window_counts.py"),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
         output:
-            counts=f"{ACTIVITY_REGULATORY_ROOT}/libraries/{{library}}.window_counts.tsv.gz"
+            counts=f"{ACTIVITY_H3K27AC_ROOT}/libraries/{{library}}.window_counts.tsv.gz"
         params:
             context=lambda wc: ACTIVITY_LIBRARIES[wc.library]["context"]
         wildcard_constraints:
@@ -398,7 +398,7 @@ if ACTIVITY:
         conda:
             "../envs/alignment.yaml"
         log:
-            f"{RESULT_ROOT}/logs/activity/catalog/{{library}}.log"
+            f"{RESULT_ROOT}/logs/activity/quantification/{{library}}.h3k27ac-windows.log"
         shell:
             r"""
             mkdir -p $(dirname {output.counts:q}) $(dirname {log:q})
@@ -418,6 +418,34 @@ if ACTIVITY:
             """
 
 
+    rule build_activity_h3k27ac_signal:
+        input:
+            master=str(ACTIVITY["master"]["master_bed"]),
+            summits=str(ACTIVITY["master"]["summits_bed"]),
+            context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
+            blacklist=str(REFERENCE["blacklist_bed"]),
+            windows=ACTIVITY_H3K27AC_WINDOWS,
+            counts=list(ACTIVITY_H3K27AC_WINDOW_COUNTS.values()),
+            factors=ACTIVITY_TMM_FACTORS,
+            master_validated=ACTIVITY_MASTER_VALIDATION,
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
+        output:
+            signal=ACTIVITY_H3K27AC_SIGNAL,
+            metrics=ACTIVITY_H3K27AC_METRICS,
+            provenance=ACTIVITY_H3K27AC_PROVENANCE
+        params:
+            window_counts=ACTIVITY_H3K27AC_WINDOW_COUNTS,
+            contexts=ACTIVITY_CONTEXTS
+        resources:
+            mem_mb=12000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/quantification/h3k27ac-signal.log"
+        script:
+            "../scripts/build_activity_h3k27ac_signal.py"
+
+
     rule build_regulatory_element_catalog:
         input:
             master=str(ACTIVITY["master"]["master_bed"]),
@@ -425,9 +453,7 @@ if ACTIVITY:
             context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
             tss=str(REFERENCE["tss_bed"]),
             blacklist=str(REFERENCE["blacklist_bed"]),
-            windows=ACTIVITY_REGULATORY_WINDOWS,
-            counts=list(ACTIVITY_REGULATORY_WINDOW_COUNTS.values()),
-            factors=ACTIVITY_TMM_FACTORS,
+            h3k27ac_signal=ACTIVITY_H3K27AC_SIGNAL,
             activity=ACTIVITY_TABLE,
             master_validated=ACTIVITY_MASTER_VALIDATION,
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
@@ -440,7 +466,6 @@ if ACTIVITY:
             metrics=ACTIVITY_REGULATORY_METRICS,
             provenance=ACTIVITY_REGULATORY_PROVENANCE
         params:
-            window_counts=ACTIVITY_REGULATORY_WINDOW_COUNTS,
             element_paths=ACTIVITY_REGULATORY_ELEMENTS,
             contexts=ACTIVITY_CONTEXTS
         resources:

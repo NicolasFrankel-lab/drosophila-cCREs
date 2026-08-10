@@ -135,14 +135,14 @@ def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
                     }
                 )
     config["activity"] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "master": master,
         "contexts": list(contexts),
         "libraries": libraries,
         "atac_fragment_maximum": 150,
         "atac_browser_extension_bp": 150,
         "normalization": "background_tmm_10kb_autosomes_v1",
-        "h3k27ac_signal": "summit_max3_500bp_v1",
+        "h3k27ac_signal": "summit_windows_background_tmm_v2",
         "mixture_model": "guarded_two_gaussian_log10_v1",
     }
     config["report"] = {
@@ -644,8 +644,9 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "prepare_activity_h3k27ac_fragments",
         "prepare_activity_h3k27ac_single_fragments",
         "count_activity_library",
-        "build_regulatory_h3k27ac_windows",
-        "count_regulatory_h3k27ac_windows",
+        "build_activity_h3k27ac_windows",
+        "count_activity_h3k27ac_windows",
+        "build_activity_h3k27ac_signal",
         "build_regulatory_element_catalog",
         "plot_regulatory_element_mixtures",
         "build_catalog_bed_tracks",
@@ -688,6 +689,18 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         match="Unsupported activity normalization",
     ):
         validate_workflow_config(invalid_method)
+
+    invalid_schema = copy.deepcopy(config)
+    invalid_schema["activity"]["schema_version"] = 3
+    with pytest.raises(AcquisitionError, match="activity schema version"):
+        validate_workflow_config(invalid_schema)
+
+    invalid_h3k27ac_signal = copy.deepcopy(config)
+    invalid_h3k27ac_signal["activity"]["h3k27ac_signal"] = (
+        "summit_max3_500bp_v1"
+    )
+    with pytest.raises(AcquisitionError, match="regulatory-element method"):
+        validate_workflow_config(invalid_h3k27ac_signal)
 
     invalid_browser_extension = copy.deepcopy(config)
     invalid_browser_extension["activity"]["atac_browser_extension_bp"] = 100
@@ -732,7 +745,11 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     config["output_stage"] = "quantification"
     quantification_output = _dry_run(tmp_path, config, "quantification-only")
     assert "build_activity_tmm_table" in quantification_output
+    assert "build_activity_h3k27ac_windows" in quantification_output
+    assert "count_activity_h3k27ac_windows" in quantification_output
+    assert "build_activity_h3k27ac_signal" in quantification_output
     assert "master_dhs_activity.tsv.gz" in quantification_output
+    assert "h3k27ac/master_dhs_signal.tsv.gz" in quantification_output
     assert "build_regulatory_element_catalog" not in quantification_output
 
 

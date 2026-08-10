@@ -395,7 +395,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity master {field} is not a SHA-256 digest"
                 )
-        if activity["schema_version"] != 3:
+        if activity["schema_version"] != 4:
             raise AcquisitionError("Unsupported activity schema version")
         if int(activity["atac_fragment_maximum"]) < 2:
             raise AcquisitionError("Activity ATAC fragment maximum is invalid")
@@ -404,7 +404,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         if activity["normalization"] != "background_tmm_10kb_autosomes_v1":
             raise AcquisitionError("Unsupported activity normalization method")
         if (
-            activity["h3k27ac_signal"] != "summit_max3_500bp_v1"
+            activity["h3k27ac_signal"] != "summit_windows_background_tmm_v2"
             or activity["mixture_model"] != "guarded_two_gaussian_log10_v1"
         ):
             raise AcquisitionError("Unsupported regulatory-element method")

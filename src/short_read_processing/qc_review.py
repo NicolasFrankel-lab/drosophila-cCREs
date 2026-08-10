@@ -79,6 +79,8 @@ def parse_tss_profile(path: Path) -> float | None:
         for fields in csv.reader(handle, delimiter="\t"):
             if len(fields) < 3:
                 continue
+            if fields[0].strip().lower() == "bins":
+                continue
             try:
                 values = [float(value) for value in fields[2:] if value.strip()]
             except ValueError:

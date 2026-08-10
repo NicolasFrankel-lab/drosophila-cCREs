@@ -1027,14 +1027,14 @@ def generate_activity_config(
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {
-            "schema_version": 3,
+            "schema_version": 4,
             "master": activity_master,
             "contexts": contexts,
             "libraries": libraries,
             "atac_fragment_maximum": 150,
             "atac_browser_extension_bp": 150,
             "normalization": "background_tmm_10kb_autosomes_v1",
-            "h3k27ac_signal": "summit_max3_500bp_v1",
+            "h3k27ac_signal": "summit_windows_background_tmm_v2",
             "mixture_model": "guarded_two_gaussian_log10_v1",
         },
         "report": {

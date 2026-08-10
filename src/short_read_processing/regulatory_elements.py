@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 import csv
 import gzip
 import math
@@ -26,11 +26,13 @@ from .activity_tmm import (
 )
 
 
-WINDOW_ORDER = ("center_500", "left_500", "right_500")
+MAX_WINDOW_ORDER = ("center_500", "left_500", "right_500")
+WINDOW_ORDER = (*MAX_WINDOW_ORDER, "centered_1000")
 WINDOW_OFFSETS = {
     "left_500": (-750, -250),
     "center_500": (-250, 250),
     "right_500": (250, 750),
+    "centered_1000": (-500, 500),
 }
 WINDOW_FIELDS = [
     "window_id",
@@ -48,6 +50,47 @@ WINDOW_COUNT_FIELDS = [
     "context",
     "raw_count",
     "total_units",
+]
+WINDOW_SIGNAL_VALUE_FIELDS = [
+    "width_bp",
+    "raw_count_sum",
+    "raw_count_mean",
+    "cpm",
+    "cpm_per_kb",
+    "normalized_cpm",
+    "normalized_cpm_per_kb",
+]
+H3K27AC_QUANTIFICATION_FIELDS = [
+    "master_dhs_id",
+    "chrom",
+    "start",
+    "end",
+    "summit",
+    "width_bp",
+    "blacklist_overlap",
+    "blacklist_overlap_bp",
+    "blacklist_overlap_fraction",
+    "context",
+    "context_membership",
+    "normalization_method",
+    "h3k27ac_library_n",
+    "h3k27ac_library_ids",
+    *(
+        f"h3k27ac_{window}_{field}"
+        for window in WINDOW_ORDER
+        for field in WINDOW_SIGNAL_VALUE_FIELDS
+    ),
+    "h3k27ac_max_500_window",
+    "h3k27ac_max_500_raw_count_sum",
+    "h3k27ac_max_500_raw_count_mean",
+    "h3k27ac_max_500_cpm",
+    "h3k27ac_max_500_cpm_per_kb",
+    "h3k27ac_max_500_normalized_cpm",
+    "h3k27ac_max_500_normalized_cpm_per_kb",
+    "h3k27ac_mean_1500_normalized_cpm_per_kb",
+    "h3k27ac_centered_1000_background_n",
+    "h3k27ac_centered_1000_background_percentile",
+    "h3k27ac_centered_1000_background_upper_tail_probability",
 ]
 MIXTURE_FIELDS = [
     "context",
@@ -97,9 +140,22 @@ CATALOG_FIELDS = [
     "h3k27ac_right_500_raw_count_sum",
     "h3k27ac_right_500_cpm_per_kb",
     "h3k27ac_right_500_normalized_cpm_per_kb",
+    "h3k27ac_max_500_raw_count_sum",
+    "h3k27ac_max_500_raw_count_mean",
+    "h3k27ac_max_500_cpm_per_kb",
     "h3k27ac_max_500_normalized_cpm_per_kb",
     "h3k27ac_max_500_window",
     "h3k27ac_mean_1500_normalized_cpm_per_kb",
+    "h3k27ac_centered_1000_width_bp",
+    "h3k27ac_centered_1000_raw_count_sum",
+    "h3k27ac_centered_1000_raw_count_mean",
+    "h3k27ac_centered_1000_cpm",
+    "h3k27ac_centered_1000_cpm_per_kb",
+    "h3k27ac_centered_1000_normalized_cpm",
+    "h3k27ac_centered_1000_normalized_cpm_per_kb",
+    "h3k27ac_centered_1000_background_n",
+    "h3k27ac_centered_1000_background_percentile",
+    "h3k27ac_centered_1000_background_upper_tail_probability",
     "h3k27ac_log10_z",
     "h3k27ac_z_tier",
     "mixture_supported",
@@ -122,8 +178,13 @@ SUMMARY_FIELDS = [
 WIDE_CONTEXT_FIELDS = [
     "context_membership",
     "atac_normalized_cpm_per_kb",
+    "h3k27ac_max_500_raw_count_sum",
     "h3k27ac_max_500_normalized_cpm_per_kb",
     "h3k27ac_max_500_window",
+    "h3k27ac_centered_1000_raw_count_sum",
+    "h3k27ac_centered_1000_normalized_cpm",
+    "h3k27ac_centered_1000_background_percentile",
+    "h3k27ac_centered_1000_background_upper_tail_probability",
     "h3k27ac_log10_z",
     "mixture_component",
     "mixture_high_posterior_probability",
@@ -522,6 +583,373 @@ def _quantile(values: list[float], probability: float) -> float:
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
+def _empirical_background_scores(
+    signal: float,
+    ordered_background: list[float],
+) -> tuple[float | None, float | None]:
+    """Return a midrank percentile and conservative upper-tail probability."""
+
+    if not ordered_background:
+        return None, None
+    lower = bisect_left(ordered_background, signal)
+    upper = bisect_right(ordered_background, signal)
+    size = len(ordered_background)
+    percentile = (lower + 0.5 * (upper - lower)) / size
+    upper_tail = (size - lower + 1) / (size + 1)
+    return percentile, upper_tail
+
+
+def build_h3k27ac_quantification(
+    *,
+    master_bed: Path,
+    summit_bed: Path,
+    context_matrix: Path,
+    blacklist_bed: Path,
+    window_table: Path,
+    window_count_paths: dict[str, Path],
+    factor_table: Path,
+    contexts: list[str],
+    output_signal: Path,
+    output_metrics: Path,
+    output_provenance: Path,
+) -> dict[str, Any]:
+    """Write raw and background-TMM summit-window signals for all DHS contexts."""
+
+    if not contexts or len(contexts) != len(set(contexts)):
+        raise ValueError("Contexts must be non-empty and unique")
+    elements = read_master_elements(master_bed, summit_bed)
+    definitions = _read_window_table(window_table)
+    definition_keys = [(row["window_id"], row["width_bp"]) for row in definitions]
+    factors = _read_factor_table(factor_table)
+    h3_libraries = sorted(
+        library_id
+        for library_id, factor in factors.items()
+        if factor["assay"] == "h3k27ac" and factor["context"] in contexts
+    )
+    if set(window_count_paths) != set(h3_libraries):
+        raise ValueError("Window count paths and atlas H3K27ac factors differ")
+
+    values_by_library: dict[
+        str, dict[tuple[str, str], dict[str, float | int | None]]
+    ] = {}
+    libraries_by_context: dict[str, list[str]] = {context: [] for context in contexts}
+    for library_id in h3_libraries:
+        factor = factors[library_id]
+        rows = _read_window_counts(window_count_paths[library_id])
+        if [(row["window_id"], row["width_bp"]) for row in rows] != definition_keys:
+            raise ValueError(f"Window definitions differ for library {library_id}")
+        if any(
+            row["library_id"] != library_id
+            or row["context"] != factor["context"]
+            or row["total_units"] != factor["total_units"]
+            for row in rows
+        ):
+            raise ValueError(f"Window-count metadata differ for library {library_id}")
+        library_values = {}
+        for row in rows:
+            width = row["width_bp"]
+            raw = row["raw_count"]
+            cpm = raw * 1_000_000.0 / factor["total_units"] if width else None
+            normalized_cpm = (
+                raw * 1_000_000.0 / factor["effective_library_size"]
+                if width
+                else None
+            )
+            library_values[(row["master_dhs_id"], row["window"])] = {
+                "raw_count": raw,
+                "cpm": cpm,
+                "cpm_per_kb": cpm * 1000.0 / width if cpm is not None else None,
+                "normalized_cpm": normalized_cpm,
+                "normalized_cpm_per_kb": (
+                    normalized_cpm * 1000.0 / width
+                    if normalized_cpm is not None
+                    else None
+                ),
+                "width_bp": width,
+            }
+        values_by_library[library_id] = library_values
+        libraries_by_context[factor["context"]].append(library_id)
+    if any(not libraries_by_context[context] for context in contexts):
+        raise ValueError("Every context requires at least one H3K27ac library")
+
+    expected_keys = [
+        (element.master_id, context) for context in contexts for element in elements
+    ]
+    membership = _read_context_matrix(context_matrix, contexts=contexts)
+    if set(membership) != set(expected_keys):
+        raise ValueError("Context membership rows differ from the master registry")
+    blacklist = _read_blacklist(blacklist_bed)
+    blacklist_by_element = {}
+    for element in elements:
+        overlap_bp, overlap_fraction = blacklist_overlap(
+            element.chrom,
+            element.start,
+            element.end,
+            blacklist,
+        )
+        blacklist_by_element[element.master_id] = {
+            "blacklist_overlap": int(overlap_bp > 0),
+            "blacklist_overlap_bp": overlap_bp,
+            "blacklist_overlap_fraction": overlap_fraction,
+        }
+
+    quantified: dict[tuple[str, str], dict[str, Any]] = {}
+    for context in contexts:
+        library_ids = sorted(libraries_by_context[context])
+        for element in elements:
+            windows = {}
+            for window in WINDOW_ORDER:
+                replicate_values = [
+                    values_by_library[library_id][(element.master_id, window)]
+                    for library_id in library_ids
+                ]
+                widths = {int(value["width_bp"]) for value in replicate_values}
+                if len(widths) != 1:
+                    raise ValueError("Window widths differ between libraries")
+                width = widths.pop()
+                raw_values = [int(value["raw_count"]) for value in replicate_values]
+                window_values: dict[str, Any] = {
+                    "width_bp": width,
+                    "raw_count_sum": sum(raw_values),
+                    "raw_count_mean": statistics.fmean(raw_values),
+                }
+                for field in (
+                    "cpm",
+                    "cpm_per_kb",
+                    "normalized_cpm",
+                    "normalized_cpm_per_kb",
+                ):
+                    numeric = [
+                        float(value[field])
+                        for value in replicate_values
+                        if value[field] is not None
+                    ]
+                    window_values[field] = (
+                        statistics.fmean(numeric) if numeric else None
+                    )
+                windows[window] = window_values
+
+            eligible = [
+                window
+                for window in MAX_WINDOW_ORDER
+                if windows[window]["normalized_cpm_per_kb"] is not None
+            ]
+            if not eligible:
+                raise ValueError("Every master DHS requires a countable max3 window")
+            winner = max(
+                eligible,
+                key=lambda window: (
+                    windows[window]["normalized_cpm_per_kb"],
+                    -MAX_WINDOW_ORDER.index(window),
+                ),
+            )
+            weighted_numerator = sum(
+                windows[window]["normalized_cpm_per_kb"]
+                * windows[window]["width_bp"]
+                for window in eligible
+            )
+            weighted_denominator = sum(
+                windows[window]["width_bp"] for window in eligible
+            )
+            quantified[(element.master_id, context)] = {
+                "windows": windows,
+                "winner": winner,
+                "mean_1500": weighted_numerator / weighted_denominator,
+                "library_ids": library_ids,
+            }
+
+    background_by_context: dict[str, list[float]] = {}
+    for context in contexts:
+        background_by_context[context] = sorted(
+            float(
+                quantified[(element.master_id, context)]["windows"][
+                    "centered_1000"
+                ]["normalized_cpm"]
+            )
+            for element in elements
+            if not membership[(element.master_id, context)]
+            and not blacklist_by_element[element.master_id]["blacklist_overlap"]
+            and quantified[(element.master_id, context)]["windows"][
+                "centered_1000"
+            ]["normalized_cpm"]
+            is not None
+        )
+
+    rows = []
+    for context in contexts:
+        background = background_by_context[context]
+        for element in elements:
+            key = (element.master_id, context)
+            aggregate = quantified[key]
+            windows = aggregate["windows"]
+            winner = aggregate["winner"]
+            centered_signal = float(windows["centered_1000"]["normalized_cpm"])
+            percentile, upper_tail = _empirical_background_scores(
+                centered_signal,
+                background,
+            )
+            row = {
+                "master_dhs_id": element.master_id,
+                "chrom": element.chrom,
+                "start": element.start,
+                "end": element.end,
+                "summit": element.summit,
+                "width_bp": element.width,
+                **blacklist_by_element[element.master_id],
+                "context": context,
+                "context_membership": membership[key],
+                "normalization_method": TMM_BACKGROUND_METHOD,
+                "h3k27ac_library_n": len(aggregate["library_ids"]),
+                "h3k27ac_library_ids": ";".join(aggregate["library_ids"]),
+                "h3k27ac_max_500_window": winner,
+                "h3k27ac_mean_1500_normalized_cpm_per_kb": aggregate[
+                    "mean_1500"
+                ],
+                "h3k27ac_centered_1000_background_n": len(background),
+                "h3k27ac_centered_1000_background_percentile": percentile,
+                "h3k27ac_centered_1000_background_upper_tail_probability": upper_tail,
+            }
+            for window in WINDOW_ORDER:
+                for field in WINDOW_SIGNAL_VALUE_FIELDS:
+                    row[f"h3k27ac_{window}_{field}"] = windows[window][field]
+            for field in WINDOW_SIGNAL_VALUE_FIELDS[1:]:
+                row[f"h3k27ac_max_500_{field}"] = windows[winner][field]
+            rows.append(row)
+
+    _write_gzip_dict_rows(output_signal, H3K27AC_QUANTIFICATION_FIELDS, rows)
+    background_metrics = {
+        context: {
+            "eligible_nonmember_n": len(values),
+            "zero_fraction": (
+                sum(value == 0 for value in values) / len(values) if values else None
+            ),
+            "quantiles": {
+                f"q{int(probability * 100):02d}": (
+                    _quantile(values, probability) if values else None
+                )
+                for probability in (0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99)
+            },
+        }
+        for context, values in background_by_context.items()
+    }
+    metrics = {
+        "method": "background_tmm_h3k27ac_summit_windows_v2",
+        "master_dhs_count": len(elements),
+        "context_count": len(contexts),
+        "row_count": len(rows),
+        "window_definition": {
+            "coordinate_system": "zero_based_half_open",
+            "left_500": "[summit-750,summit-250)",
+            "center_500": "[summit-250,summit+250)",
+            "right_500": "[summit+250,summit+750)",
+            "centered_1000": "[summit-500,summit+500)",
+            "chromosome_boundary_policy": "clip; zero-width windows retain raw zero and blank normalized values",
+            "replicate_aggregation": "equal_weight_mean_of_per-library_values",
+            "maximum_tie_order": list(MAX_WINDOW_ORDER),
+        },
+        "centered_total_definition": (
+            "equal_weight_context_mean of per-library background-TMM normalized CPM "
+            "for fragments overlapping the centered 1000-bp window"
+        ),
+        "background_definition": {
+            "population": "same-context master DHSs with context_membership=0",
+            "blacklist_policy": "exclude master DHSs overlapping the reference blacklist",
+            "percentile": "midrank empirical CDF",
+            "upper_tail_probability": "(1 + count(background >= signal)) / (1 + background_n)",
+            "by_context": background_metrics,
+        },
+        "output_signal_sha256": sha256_file(output_signal),
+    }
+    provenance = {
+        "method": metrics["method"],
+        "inputs": {
+            "master_bed": {"path": str(master_bed.resolve()), "sha256": sha256_file(master_bed)},
+            "summit_bed": {"path": str(summit_bed.resolve()), "sha256": sha256_file(summit_bed)},
+            "context_matrix": {"path": str(context_matrix.resolve()), "sha256": sha256_file(context_matrix)},
+            "blacklist_bed": {"path": str(blacklist_bed.resolve()), "sha256": sha256_file(blacklist_bed)},
+            "window_table": {"path": str(window_table.resolve()), "sha256": sha256_file(window_table)},
+            "factor_table": {"path": str(factor_table.resolve()), "sha256": sha256_file(factor_table)},
+            "window_counts": {
+                library_id: {"path": str(path.resolve()), "sha256": sha256_file(path)}
+                for library_id, path in sorted(window_count_paths.items())
+            },
+        },
+        "parameters": {
+            key: metrics[key]
+            for key in (
+                "window_definition",
+                "centered_total_definition",
+                "background_definition",
+            )
+        },
+        "outputs": {
+            "signal": {
+                "path": str(output_signal.resolve()),
+                "sha256": sha256_file(output_signal),
+            }
+        },
+    }
+    write_json_if_changed(output_metrics, metrics)
+    write_json_if_changed(output_provenance, provenance)
+    return metrics
+
+
+def _read_h3k27ac_quantification(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames != H3K27AC_QUANTIFICATION_FIELDS:
+            raise ValueError(f"{path}: unexpected H3K27ac quantification columns")
+        for source in reader:
+            key = (source["master_dhs_id"], source["context"])
+            if key in rows or source["normalization_method"] != TMM_BACKGROUND_METHOD:
+                raise ValueError(f"{path}: invalid H3K27ac quantification row")
+            row: dict[str, Any] = dict(source)
+            for field in (
+                "start",
+                "end",
+                "summit",
+                "width_bp",
+                "blacklist_overlap",
+                "blacklist_overlap_bp",
+                "context_membership",
+                "h3k27ac_library_n",
+                "h3k27ac_centered_1000_background_n",
+            ):
+                row[field] = int(source[field])
+            row["blacklist_overlap_fraction"] = float(
+                source["blacklist_overlap_fraction"]
+            )
+            for window in WINDOW_ORDER:
+                for field in WINDOW_SIGNAL_VALUE_FIELDS:
+                    name = f"h3k27ac_{window}_{field}"
+                    if field in {"width_bp", "raw_count_sum"}:
+                        row[name] = int(source[name])
+                    else:
+                        row[name] = float(source[name]) if source[name] else None
+            for field in (
+                "h3k27ac_max_500_raw_count_sum",
+            ):
+                row[field] = int(source[field])
+            for field in (
+                "h3k27ac_max_500_raw_count_mean",
+                "h3k27ac_max_500_cpm",
+                "h3k27ac_max_500_cpm_per_kb",
+                "h3k27ac_max_500_normalized_cpm",
+                "h3k27ac_max_500_normalized_cpm_per_kb",
+                "h3k27ac_mean_1500_normalized_cpm_per_kb",
+                "h3k27ac_centered_1000_background_percentile",
+                "h3k27ac_centered_1000_background_upper_tail_probability",
+            ):
+                row[field] = float(source[field]) if source[field] else None
+            if source["h3k27ac_max_500_window"] not in MAX_WINDOW_ORDER:
+                raise ValueError(f"{path}: invalid maximum H3K27ac window")
+            rows[key] = row
+    if not rows:
+        raise ValueError(f"{path}: H3K27ac quantification table is empty")
+    return rows
+
+
 def _fit_two_gaussians(values: list[float]) -> dict[str, float]:
     n = len(values)
     overall_variance = statistics.pvariance(values)
@@ -726,9 +1154,7 @@ def build_regulatory_catalog(
     context_matrix: Path,
     tss_bed: Path,
     blacklist_bed: Path,
-    window_table: Path,
-    window_count_paths: dict[str, Path],
-    factor_table: Path,
+    h3k27ac_quantification: Path,
     activity_table: Path,
     contexts: list[str],
     output_catalog: Path,
@@ -739,60 +1165,13 @@ def build_regulatory_catalog(
     output_metrics: Path,
     output_provenance: Path,
 ) -> dict[str, Any]:
-    """Aggregate H3K27ac windows, fit guarded mixtures, and write the catalog."""
+    """Fit guarded mixtures to quantified H3K27ac and write the catalog."""
 
     if not contexts or len(contexts) != len(set(contexts)):
         raise ValueError("Contexts must be non-empty and unique")
     if set(output_element_paths) != set(contexts):
         raise ValueError("Context-element output paths must match contexts")
     elements = read_master_elements(master_bed, summit_bed)
-    definitions = _read_window_table(window_table)
-    definition_keys = [(row["window_id"], row["width_bp"]) for row in definitions]
-    factors = _read_factor_table(factor_table)
-    h3_libraries = sorted(
-        library_id
-        for library_id, factor in factors.items()
-        if factor["assay"] == "h3k27ac" and factor["context"] in contexts
-    )
-    if set(window_count_paths) != set(h3_libraries):
-        raise ValueError("Window count paths and atlas H3K27ac factors differ")
-    values_by_library: dict[str, dict[tuple[str, str], dict[str, float | int | None]]] = {}
-    libraries_by_context: dict[str, list[str]] = {context: [] for context in contexts}
-    for library_id in h3_libraries:
-        factor = factors[library_id]
-        rows = _read_window_counts(window_count_paths[library_id])
-        if [(row["window_id"], row["width_bp"]) for row in rows] != definition_keys:
-            raise ValueError(f"Window definitions differ for library {library_id}")
-        if any(
-            row["library_id"] != library_id
-            or row["context"] != factor["context"]
-            or row["total_units"] != factor["total_units"]
-            for row in rows
-        ):
-            raise ValueError(f"Window-count metadata differ for library {library_id}")
-        library_values = {}
-        for row in rows:
-            width = row["width_bp"]
-            raw = row["raw_count"]
-            library_values[(row["master_dhs_id"], row["window"])] = {
-                "raw_count": raw,
-                "cpm_per_kb": (
-                    raw * 1_000_000_000.0 / (factor["total_units"] * width)
-                    if width
-                    else None
-                ),
-                "normalized_cpm_per_kb": (
-                    raw * 1_000_000_000.0 / (factor["effective_library_size"] * width)
-                    if width
-                    else None
-                ),
-                "width_bp": width,
-            }
-        values_by_library[library_id] = library_values
-        libraries_by_context[factor["context"]].append(library_id)
-    if any(not libraries_by_context[context] for context in contexts):
-        raise ValueError("Every context requires at least one H3K27ac library")
-
     activity_keys, activity_rows = _read_activity_table(activity_table)
     expected_keys = [
         (element.master_id, context) for context in contexts for element in elements
@@ -818,58 +1197,53 @@ def build_regulatory_catalog(
             "blacklist_overlap_fraction": overlap_fraction,
         }
 
+    quantified = _read_h3k27ac_quantification(h3k27ac_quantification)
+    if set(quantified) != set(expected_keys):
+        raise ValueError("H3K27ac quantification master/context records differ")
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     for context in contexts:
-        library_ids = sorted(libraries_by_context[context])
         for element in elements:
-            windows = {}
-            for window in WINDOW_ORDER:
-                replicate_values = [
-                    values_by_library[library_id][(element.master_id, window)]
-                    for library_id in library_ids
-                ]
-                numeric_plain = [
-                    value["cpm_per_kb"]
-                    for value in replicate_values
-                    if value["cpm_per_kb"] is not None
-                ]
-                numeric_normalized = [
-                    value["normalized_cpm_per_kb"]
-                    for value in replicate_values
-                    if value["normalized_cpm_per_kb"] is not None
-                ]
-                widths = {int(value["width_bp"]) for value in replicate_values}
-                if len(widths) != 1:
-                    raise ValueError("Window widths differ between libraries")
-                windows[window] = {
-                    "width_bp": widths.pop(),
-                    "raw_count_sum": sum(int(value["raw_count"]) for value in replicate_values),
-                    "cpm_per_kb": statistics.fmean(numeric_plain) if numeric_plain else None,
-                    "normalized_cpm_per_kb": (
-                        statistics.fmean(numeric_normalized) if numeric_normalized else None
-                    ),
+            key = (element.master_id, context)
+            source = quantified[key]
+            annotation = blacklist_by_element[element.master_id]
+            if (
+                source["chrom"] != element.chrom
+                or source["start"] != element.start
+                or source["end"] != element.end
+                or source["summit"] != element.summit
+                or source["context_membership"] != membership[key]
+                or any(source[field] != annotation[field] for field in annotation)
+            ):
+                raise ValueError(
+                    "H3K27ac quantification annotations differ from catalog inputs"
+                )
+            windows = {
+                window: {
+                    field: source[f"h3k27ac_{window}_{field}"]
+                    for field in WINDOW_SIGNAL_VALUE_FIELDS
                 }
-            eligible = [
-                window for window in WINDOW_ORDER if windows[window]["normalized_cpm_per_kb"] is not None
-            ]
-            winner = max(
-                eligible,
-                key=lambda window: (
-                    windows[window]["normalized_cpm_per_kb"],
-                    -WINDOW_ORDER.index(window),
-                ),
-            )
-            weighted_numerator = sum(
-                windows[window]["normalized_cpm_per_kb"] * windows[window]["width_bp"]
-                for window in eligible
-            )
-            weighted_denominator = sum(windows[window]["width_bp"] for window in eligible)
-            aggregated[(element.master_id, context)] = {
+                for window in WINDOW_ORDER
+            }
+            aggregated[key] = {
                 "windows": windows,
-                "max_value": windows[winner]["normalized_cpm_per_kb"],
-                "winner": winner,
-                "mean_value": weighted_numerator / weighted_denominator,
-                "library_ids": library_ids,
+                "max_value": source[
+                    "h3k27ac_max_500_normalized_cpm_per_kb"
+                ],
+                "winner": source["h3k27ac_max_500_window"],
+                "mean_value": source[
+                    "h3k27ac_mean_1500_normalized_cpm_per_kb"
+                ],
+                "library_n": source["h3k27ac_library_n"],
+                "library_ids": source["h3k27ac_library_ids"],
+                "background_n": source[
+                    "h3k27ac_centered_1000_background_n"
+                ],
+                "background_percentile": source[
+                    "h3k27ac_centered_1000_background_percentile"
+                ],
+                "background_upper_tail_probability": source[
+                    "h3k27ac_centered_1000_background_upper_tail_probability"
+                ],
             }
 
     z_by_key: dict[tuple[str, str], float | None] = {}
@@ -958,11 +1332,46 @@ def build_regulatory_catalog(
             "nearest_tss_ids": tss_ids,
             "regulatory_class": element_class,
             "atac_normalized_cpm_per_kb": atac,
-            "h3k27ac_library_n": len(aggregate["library_ids"]),
-            "h3k27ac_library_ids": ";".join(aggregate["library_ids"]),
+            "h3k27ac_library_n": aggregate["library_n"],
+            "h3k27ac_library_ids": aggregate["library_ids"],
+            "h3k27ac_max_500_raw_count_sum": windows[aggregate["winner"]][
+                "raw_count_sum"
+            ],
+            "h3k27ac_max_500_raw_count_mean": windows[aggregate["winner"]][
+                "raw_count_mean"
+            ],
+            "h3k27ac_max_500_cpm_per_kb": windows[aggregate["winner"]][
+                "cpm_per_kb"
+            ],
             "h3k27ac_max_500_normalized_cpm_per_kb": aggregate["max_value"],
             "h3k27ac_max_500_window": aggregate["winner"],
             "h3k27ac_mean_1500_normalized_cpm_per_kb": aggregate["mean_value"],
+            "h3k27ac_centered_1000_width_bp": windows["centered_1000"][
+                "width_bp"
+            ],
+            "h3k27ac_centered_1000_raw_count_sum": windows["centered_1000"][
+                "raw_count_sum"
+            ],
+            "h3k27ac_centered_1000_raw_count_mean": windows["centered_1000"][
+                "raw_count_mean"
+            ],
+            "h3k27ac_centered_1000_cpm": windows["centered_1000"]["cpm"],
+            "h3k27ac_centered_1000_cpm_per_kb": windows["centered_1000"][
+                "cpm_per_kb"
+            ],
+            "h3k27ac_centered_1000_normalized_cpm": windows[
+                "centered_1000"
+            ]["normalized_cpm"],
+            "h3k27ac_centered_1000_normalized_cpm_per_kb": windows[
+                "centered_1000"
+            ]["normalized_cpm_per_kb"],
+            "h3k27ac_centered_1000_background_n": aggregate["background_n"],
+            "h3k27ac_centered_1000_background_percentile": aggregate[
+                "background_percentile"
+            ],
+            "h3k27ac_centered_1000_background_upper_tail_probability": aggregate[
+                "background_upper_tail_probability"
+            ],
             "h3k27ac_log10_z": z_score,
             "h3k27ac_z_tier": z_tier,
             "mixture_supported": int(mixture["mixture_supported"]),
@@ -1081,7 +1490,7 @@ def build_regulatory_catalog(
     _atomic_text_if_changed(output_summary, summary_content)
 
     metrics = {
-        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v3",
+        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v4",
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "catalog_row_count": len(elements) * len(contexts),
@@ -1090,9 +1499,10 @@ def build_regulatory_catalog(
             "left_500": "[summit-750,summit-250)",
             "center_500": "[summit-250,summit+250)",
             "right_500": "[summit+250,summit+750)",
+            "centered_1000": "[summit-500,summit+500)",
             "chromosome_boundary_policy": "clip; zero-width windows retained with blank normalized values",
-            "replicate_aggregation": "equal_weight_context_mean_before_window_maximum",
-            "maximum_tie_order": list(WINDOW_ORDER),
+            "replicate_aggregation": "read from quantification-stage equal-weight context means",
+            "maximum_tie_order": list(MAX_WINDOW_ORDER),
         },
         "z_score_definition": "population_z_of_positive_log10_context_mean_max3_across_full_master_set",
         "mixture_definition": {
@@ -1165,13 +1575,11 @@ def build_regulatory_catalog(
             "context_matrix": {"path": str(context_matrix.resolve()), "sha256": sha256_file(context_matrix)},
             "tss_bed": {"path": str(tss_bed.resolve()), "sha256": sha256_file(tss_bed)},
             "blacklist_bed": {"path": str(blacklist_bed.resolve()), "sha256": sha256_file(blacklist_bed)},
-            "window_table": {"path": str(window_table.resolve()), "sha256": sha256_file(window_table)},
-            "factor_table": {"path": str(factor_table.resolve()), "sha256": sha256_file(factor_table)},
-            "activity_table": {"path": str(activity_table.resolve()), "sha256": sha256_file(activity_table)},
-            "window_counts": {
-                library_id: {"path": str(path.resolve()), "sha256": sha256_file(path)}
-                for library_id, path in sorted(window_count_paths.items())
+            "h3k27ac_quantification": {
+                "path": str(h3k27ac_quantification.resolve()),
+                "sha256": sha256_file(h3k27ac_quantification),
             },
+            "activity_table": {"path": str(activity_table.resolve()), "sha256": sha256_file(activity_table)},
         },
         "parameters": {
             key: metrics[key]

@@ -14,10 +14,12 @@ from short_read_processing.activity_tmm import (
 )
 from short_read_processing.regulatory_elements import (
     CATALOG_FIELDS,
+    H3K27AC_QUANTIFICATION_FIELDS,
     WINDOW_COUNT_FIELDS,
     WINDOW_FIELDS,
     _read_blacklist,
     blacklist_overlap,
+    build_h3k27ac_quantification,
     build_regulatory_catalog,
     fit_guarded_mixture,
     mixture_assignment,
@@ -58,8 +60,8 @@ def test_window_definitions_clip_boundaries_and_retain_empty_flanks(tmp_path):
     )
 
     assert metrics == {
-        "window_count": 6,
-        "countable_window_count": 5,
+        "window_count": 8,
+        "countable_window_count": 7,
         "zero_width_window_count": 1,
     }
     with gzip.open(table, "rt", newline="") as handle:
@@ -68,7 +70,11 @@ def test_window_definitions_clip_boundaries_and_retain_empty_flanks(tmp_path):
     assert (int(first["left_500"]["start"]), int(first["left_500"]["end"])) == (0, 0)
     assert (int(first["center_500"]["start"]), int(first["center_500"]["end"])) == (0, 350)
     assert (int(first["right_500"]["start"]), int(first["right_500"]["end"])) == (350, 850)
-    assert len(bed.read_text().splitlines()) == 5
+    assert (
+        int(first["centered_1000"]["start"]),
+        int(first["centered_1000"]["end"]),
+    ) == (0, 600)
+    assert len(bed.read_text().splitlines()) == 7
 
 
 def test_window_count_formatter_fills_zero_width_window(tmp_path):
@@ -252,6 +258,8 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     # the same per-kb context mean as 100 counts in the 500-bp center window.
     first_counts[("DHS0000002", "left_500")] = 40
     second_counts[("DHS0000002", "center_500")] = 100
+    first_counts[("DHS0000002", "centered_1000")] = 60
+    second_counts[("DHS0000002", "centered_1000")] = 140
     for library_id, values in (("h3_1", first_counts), ("h3_2", second_counts)):
         _write_window_count_table(
             count_paths[library_id], definitions, library_id=library_id, counts=values
@@ -263,7 +271,7 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     matrix = tmp_path / "matrix.tsv"
     matrix.write_text(
         "master_dhs_id\tchrom\tstart\tend\tsummit\tcontext_n\tctx\n"
-        "DHS0000001\tchr1\t50\t151\t100\t1\t1\n"
+        "DHS0000001\tchr1\t50\t151\t100\t0\t0\n"
         "DHS0000002\tchr1\t400\t501\t450\t1\t1\n"
     )
     tss = tmp_path / "tss.bed"
@@ -273,6 +281,44 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     catalog = tmp_path / "catalog.tsv.gz"
     wide = tmp_path / "wide.tsv.gz"
     context_elements = tmp_path / "ctx.elements.tsv.gz"
+    h3k27ac_signal = tmp_path / "h3k27ac_signal.tsv.gz"
+
+    build_h3k27ac_quantification(
+        master_bed=master,
+        summit_bed=summit,
+        context_matrix=matrix,
+        blacklist_bed=blacklist,
+        window_table=windows,
+        window_count_paths=count_paths,
+        factor_table=factors,
+        contexts=["ctx"],
+        output_signal=h3k27ac_signal,
+        output_metrics=tmp_path / "h3k27ac_metrics.json",
+        output_provenance=tmp_path / "h3k27ac_provenance.json",
+    )
+
+    with gzip.open(h3k27ac_signal, "rt", newline="") as handle:
+        signal_reader = csv.DictReader(handle, delimiter="\t")
+        assert signal_reader.fieldnames == H3K27AC_QUANTIFICATION_FIELDS
+        signal_rows = list(signal_reader)
+    second_signal = next(
+        row for row in signal_rows if row["master_dhs_id"] == "DHS0000002"
+    )
+    assert second_signal["h3k27ac_max_500_window"] == "center_500"
+    assert second_signal["h3k27ac_max_500_raw_count_sum"] == "100"
+    assert second_signal["h3k27ac_centered_1000_raw_count_sum"] == "200"
+    assert float(
+        second_signal["h3k27ac_centered_1000_normalized_cpm"]
+    ) == pytest.approx(100000)
+    assert second_signal["h3k27ac_centered_1000_background_n"] == "1"
+    assert float(
+        second_signal["h3k27ac_centered_1000_background_percentile"]
+    ) == pytest.approx(1.0)
+    assert float(
+        second_signal[
+            "h3k27ac_centered_1000_background_upper_tail_probability"
+        ]
+    ) == pytest.approx(0.5)
 
     build_regulatory_catalog(
         master_bed=master,
@@ -280,9 +326,7 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         context_matrix=matrix,
         tss_bed=tss,
         blacklist_bed=blacklist,
-        window_table=windows,
-        window_count_paths=count_paths,
-        factor_table=factors,
+        h3k27ac_quantification=h3k27ac_signal,
         activity_table=activity,
         contexts=["ctx"],
         output_catalog=catalog,
@@ -307,6 +351,14 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     assert float(second["blacklist_overlap_fraction"]) == pytest.approx(50 / 101)
     assert float(second["h3k27ac_left_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
     assert float(second["h3k27ac_center_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
+    assert second["h3k27ac_max_500_raw_count_sum"] == "100"
+    assert second["h3k27ac_centered_1000_raw_count_sum"] == "200"
+    assert float(second["h3k27ac_centered_1000_normalized_cpm"]) == pytest.approx(
+        100000
+    )
+    assert float(
+        second["h3k27ac_centered_1000_background_percentile"]
+    ) == pytest.approx(1.0)
     assert float(second["combined_activity_max_500"]) == pytest.approx(
         math.sqrt(9 * 100000)
     )
@@ -318,4 +370,4 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     with gzip.open(context_elements, "rt", newline="") as handle:
         element_reader = csv.DictReader(handle, delimiter="\t")
         assert element_reader.fieldnames == CATALOG_FIELDS
-        assert len(list(element_reader)) == 2
+        assert len(list(element_reader)) == 1

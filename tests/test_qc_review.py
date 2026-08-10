@@ -18,7 +18,7 @@ def test_qc_metric_parsers(tmp_path):
     values[199] = 4.0
     profile.write_text(
         "bin labels\n"
-        "bins\n"
+        "bins\t\t" + "\t".join(str(index) for index in range(1, 401)) + "\n"
         "sample\tgenes\t" + "\t".join(str(value) for value in values) + "\n"
     )
     assert parse_tss_profile(profile) == pytest.approx(4.0)
@@ -79,7 +79,7 @@ def test_build_review_table_combines_assay_specific_metrics(tmp_path):
     values[199] = 4.0
     profile.write_text(
         "bin labels\n"
-        "bins\n"
+        "bins\t\t" + "\t".join(str(index) for index in range(1, 401)) + "\n"
         "sample\tgenes\t" + "\t".join(str(value) for value in values) + "\n"
     )
     histogram = tmp_path / "atac.histogram.tsv"

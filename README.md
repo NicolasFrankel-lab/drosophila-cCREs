@@ -147,8 +147,8 @@ two biological ATAC libraries per context.
 | `alignment` | quality-filtered, blacklist-retaining final BAM/BAI, alignment QC, final-BAM manifest |
 | `qc` | peaks, FRiP and assay QC, MultiQC |
 | `master` | replicate-supported context peaks and master DHS bundle/manifest |
-| `quantification` | raw, CPM/kb, background-TMM factors and normalized master-element signals |
-| `catalog` | max-window H3K27ac mixtures, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
+| `quantification` | raw, CPM/kb, background-TMM factors, exact-DHS signals, summit max3/centered-1-kb H3K27ac signals, and nonmember-background ranks |
+| `catalog` | guarded H3K27ac mixtures, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
 | `links` | default one-row-per-enhancer nearest-TSS table and promoter activity annotations; optional normalized contacts, decay model, context edges, and contact-ranked genes with `--with-contacts` |
 | `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the links |
 
@@ -587,9 +587,10 @@ background bins. Context values are equal-weight means of normalized biological
 libraries. The quantification table retains raw, CPM/kb, normalized CPM/kb,
 replicate SD, and `sqrt(ATAC × H3K27ac)` values.
 
-## H3K27ac signal and guarded mixtures
+## H3K27ac summit signal and nonmember background
 
-For every master summit, H3K27ac is counted in three clipped, non-overlapping
+During quantification, H3K27ac is counted for every master DHS in every context
+in four clipped summit-centered windows. The first three are non-overlapping
 500-bp windows:
 
 ```text
@@ -598,9 +599,34 @@ center: [summit-250, summit+250)
 right:  [summit+250, summit+750)
 ```
 
-Replicates are averaged within context before selecting the maximum normalized
-window. The two-Gaussian model is fitted to positive `log10(max-window
-H3K27ac)` values among DHSs open in that context.
+The fourth measurement is an overlapping total-signal window:
+
+```text
+centered total: [summit-500, summit+500)
+```
+
+The strict DHS-by-context table retains every window's raw count sum and mean,
+CPM, CPM/kb, background-TMM normalized CPM, and normalized CPM/kb. Per-library
+raw window counts are also retained. Replicates are averaged with equal weight
+within context before selecting the maximum normalized density among the three
+500-bp windows. The max3 raw signal is the raw count for that normalized-signal
+winning window. The centered 1-kb primary measurement is normalized CPM, which
+represents total normalized fragments overlapping the interval rather than a
+per-base density.
+
+For each context, `context_membership=0` master DHSs that do not overlap the
+reference blacklist form the empirical H3K27ac background. Every DHS receives
+a midrank percentile and a conservative upper-tail probability
+`(1 + count(background >= signal)) / (1 + background_n)` from the centered
+1-kb normalized signal. The table reports the background size, and metrics
+report its zero fraction and q50/q60/q70/q80/q90/q95/q99 values. Quantification
+does not impose an activity cutoff.
+
+## Guarded H3K27ac mixtures
+
+The catalog stage consumes the frozen quantification table. The two-Gaussian
+model is fitted to positive `log10(max-window H3K27ac)` values among DHSs open
+in that context; it does not recount BAMs or reapply TMM factors.
 
 A fit is marked supported only if all guards pass:
 
@@ -617,6 +643,11 @@ rows are retained with `mixture_supported=0`,
 `mixture_guardrail_warning=1`, and the exact semicolon-separated failures in
 `mixture_guardrail_failures`. No unsupported call is silently promoted to a
 supported one.
+
+This summit-window quantification is activity schema version 4 with method
+`summit_windows_background_tmm_v2`. Start it in a new `run_id`; older catalog
+bundles remain importable for links-only analysis but are not silently
+reinterpreted with the new measurements.
 
 ## Regulatory classes
 
@@ -750,6 +781,12 @@ results/<project>/<run_id>/activity/quantification/context_signal.tsv.gz
 results/<project>/<run_id>/activity/quantification/master_dhs_activity.tsv.gz
 results/<project>/<run_id>/activity/quantification/activity_metrics.json
 results/<project>/<run_id>/activity/quantification/activity_provenance.json
+results/<project>/<run_id>/activity/quantification/h3k27ac/windows.tsv.gz
+results/<project>/<run_id>/activity/quantification/h3k27ac/windows.bed
+results/<project>/<run_id>/activity/quantification/h3k27ac/libraries/*.window_counts.tsv.gz
+results/<project>/<run_id>/activity/quantification/h3k27ac/master_dhs_signal.tsv.gz
+results/<project>/<run_id>/activity/quantification/h3k27ac/metrics.json
+results/<project>/<run_id>/activity/quantification/h3k27ac/provenance.json
 ```
 
 Catalog:

@@ -11,12 +11,7 @@ metrics = build_regulatory_catalog(
     context_matrix=Path(str(snakemake.input.context_matrix)),
     tss_bed=Path(str(snakemake.input.tss)),
     blacklist_bed=Path(str(snakemake.input.blacklist)),
-    window_table=Path(str(snakemake.input.windows)),
-    window_count_paths={
-        str(library): Path(str(path))
-        for library, path in dict(snakemake.params.window_counts).items()
-    },
-    factor_table=Path(str(snakemake.input.factors)),
+    h3k27ac_quantification=Path(str(snakemake.input.h3k27ac_signal)),
     activity_table=Path(str(snakemake.input.activity)),
     contexts=list(snakemake.params.contexts),
     output_catalog=Path(str(snakemake.output.catalog)),
