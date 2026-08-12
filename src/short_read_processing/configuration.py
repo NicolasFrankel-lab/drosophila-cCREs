@@ -184,19 +184,18 @@ def _nearest_tss_link_config(
         reference_fasta = path_base / reference_fasta
     annotation = reference_fasta.parent / "sources" / annotation_name
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "promoter_annotation": _display_path(annotation, path_base),
         "promoter_annotation_checksum": str(
             reference["preparation"]["annotation"]["checksum"]
         ),
         "chromosome_scope": "all_annotation_chromosomes_in_chrom_sizes",
         "promoter_width_bp": 1000,
-        "promoter_posterior_threshold": 0.5,
         "enhancer_classes": [
             "proximal_enhancer_like",
             "distal_enhancer_like",
         ],
-        "promoter_activity": "summit_within_500bp_max_v2",
+        "promoter_activity": "summit_within_500bp_catalog_activity_v3",
         "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
     }
 
@@ -1027,15 +1026,15 @@ def generate_activity_config(
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {
-            "schema_version": 4,
+            "schema_version": 5,
             "master": activity_master,
             "contexts": contexts,
             "libraries": libraries,
             "atac_fragment_maximum": 150,
             "atac_browser_extension_bp": 150,
             "normalization": "background_tmm_10kb_autosomes_v1",
-            "h3k27ac_signal": "summit_windows_background_tmm_v2",
-            "mixture_model": "guarded_two_gaussian_log10_v1",
+            "h3k27ac_signal": "summit_max3_background_tmm_v3",
+            "h3k27ac_activity_percentile_threshold": 0.60,
         },
         "report": {
             "schema_version": 1,

@@ -34,7 +34,8 @@ CATALOG_FIELDS = (
     "context_membership",
     "regulatory_class",
     "atac_normalized_cpm_per_kb",
-    "mixture_high_posterior_probability",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_active",
     "activity_state",
     "combined_activity_max_500",
     "blacklist_overlap",
@@ -94,7 +95,7 @@ def _edge(*, gene_id, promoter_id, enrichment, score, contact_weight=1.0):
         "distance_bp": 100,
         "promoter_active": 1,
         "promoter_atac_signal": "2",
-        "promoter_h3k27ac_posterior": "0.8",
+        "promoter_h3k27ac_background_percentile": "0.8",
         "contact_strategy": "observed",
         "contact_assay": "Micro-C",
         "contact_match": "matched",
@@ -108,7 +109,7 @@ def _edge(*, gene_id, promoter_id, enrichment, score, contact_weight=1.0):
     }
 
 
-def test_active_contact_enhancer_gene_projection_applies_both_thresholds():
+def test_active_contact_enhancer_gene_projection_requires_catalog_activity_and_contact_threshold():
     element = Element(
         master_dhs_id="DHS_active",
         chrom="chr2L",
@@ -116,9 +117,10 @@ def test_active_contact_enhancer_gene_projection_applies_both_thresholds():
         end=200,
         summit=150,
         regulatory_class="distal_enhancer_like",
-        activity_state="active_high_mixture",
+        activity_state="active_h3k27ac_background_gt_0.60",
         atac_signal=4,
-        h3k27ac_posterior=0.5,
+        h3k27ac_background_percentile=0.8,
+        h3k27ac_active=1,
         combined_activity=4,
         blacklist_overlap=0,
     )
@@ -144,7 +146,6 @@ def test_active_contact_enhancer_gene_projection_applies_both_thresholds():
                 score=30,
             ),
         ],
-        element_posterior_threshold=0.5,
         observed_over_expected_threshold=1.0,
     )
 
@@ -152,13 +153,12 @@ def test_active_contact_enhancer_gene_projection_applies_both_thresholds():
     assert rows[0]["best_promoter_id"] == "promoter_qualifying"
     assert rows[0]["best_observed_over_expected"] == "1"
 
-    below_threshold = Element(
-        **{**element.__dict__, "h3k27ac_posterior": 0.499}
+    inactive = Element(
+        **{**element.__dict__, "h3k27ac_background_percentile": 0.6, "h3k27ac_active": 0}
     )
     assert not _active_contact_enhancer_gene_rows(
-        below_threshold,
+        inactive,
         [_edge(gene_id="gene_x", promoter_id="promoter", enrichment="2", score=1)],
-        element_posterior_threshold=0.5,
         observed_over_expected_threshold=1.0,
     )
 
@@ -183,8 +183,9 @@ def test_focused_candidate_table_is_derived_from_existing_graph_tables(tmp_path)
                 "anchor": 150,
                 "regulatory_class": "distal_enhancer_like",
                 "atac_signal": 4,
-                "h3k27ac_posterior": 0.5,
+                "h3k27ac_background_percentile": 0.8,
                 "combined_activity": 4,
+                "active": 1,
                 "blacklist_overlap": 0,
             },
             {
@@ -198,8 +199,9 @@ def test_focused_candidate_table_is_derived_from_existing_graph_tables(tmp_path)
                 "anchor": 1000,
                 "regulatory_class": "promoter",
                 "atac_signal": 2,
-                "h3k27ac_posterior": 0.8,
+                "h3k27ac_background_percentile": 0.8,
                 "combined_activity": 2,
+                "active": 1,
             },
         ],
     )
@@ -235,7 +237,6 @@ def test_focused_candidate_table_is_derived_from_existing_graph_tables(tmp_path)
         context="ctx",
         nodes_path=nodes,
         edges_path=edges,
-        element_posterior_threshold=0.5,
         observed_over_expected_threshold=1.0,
         output=output,
         metrics_output=metrics,
@@ -283,9 +284,10 @@ def test_distance_projection_ranks_active_promoters_and_reports_tss_baselines():
         end=200,
         summit=150,
         regulatory_class="distal_enhancer_like",
-        activity_state="active_high_mixture",
+        activity_state="active_h3k27ac_background_gt_0.60",
         atac_signal=4,
-        h3k27ac_posterior=0.5,
+        h3k27ac_background_percentile=0.8,
+        h3k27ac_active=1,
         combined_activity=4,
         blacklist_overlap=0,
     )
@@ -312,7 +314,6 @@ def test_distance_projection_ranks_active_promoters_and_reports_tss_baselines():
                 promoter_active=0,
             ),
         ],
-        element_posterior_threshold=0.5,
     )
 
     assert [row["gene_id"] for row in rows] == ["gene_x", "gene_y"]
@@ -348,8 +349,9 @@ def test_distance_candidate_table_is_derived_from_existing_graph_tables(tmp_path
                 "anchor": 150,
                 "regulatory_class": "distal_enhancer_like",
                 "atac_signal": 4,
-                "h3k27ac_posterior": 0.5,
+                "h3k27ac_background_percentile": 0.8,
                 "combined_activity": 4,
+                "active": 1,
                 "blacklist_overlap": 0,
             }
         ],
@@ -380,7 +382,6 @@ def test_distance_candidate_table_is_derived_from_existing_graph_tables(tmp_path
         context="ctx",
         nodes_path=nodes,
         edges_path=edges,
-        element_posterior_threshold=0.5,
         output=output,
         metrics_output=metrics,
     )
@@ -422,7 +423,7 @@ def test_nearest_active_promoter_projection_retains_ties_and_supporting_elements
             "regulatory_class": regulatory_class,
             "atac_accessible": 1,
             "atac_signal": 4,
-            "h3k27ac_posterior": posterior,
+            "h3k27ac_background_percentile": posterior,
             "combined_activity": 4,
             "active": active,
             "blacklist_overlap": 0,
@@ -452,7 +453,7 @@ def test_nearest_active_promoter_projection_retains_ties_and_supporting_elements
             "regulatory_class": "promoter",
             "atac_accessible": 1,
             "atac_signal": 5,
-            "h3k27ac_posterior": 0.8,
+            "h3k27ac_background_percentile": 0.8,
             "combined_activity": 5,
             "active": active,
             "blacklist_overlap": "",
@@ -548,7 +549,6 @@ def test_nearest_active_promoter_projection_retains_ties_and_supporting_elements
     result = build_nearest_active_promoter_gene_candidates(
         context="ctx",
         nodes_path=nodes,
-        element_posterior_threshold=0.5,
         output=output,
         metrics_output=metrics,
     )
@@ -659,8 +659,9 @@ def test_legacy_catalog_defaults_missing_blacklist_overlap_to_zero(tmp_path):
         "context_membership": 1,
         "regulatory_class": "distal_enhancer_like",
         "atac_normalized_cpm_per_kb": 4,
-        "mixture_high_posterior_probability": 0.8,
-        "activity_state": "active_high_mixture",
+        "h3k27ac_max_500_background_percentile": 0.8,
+        "h3k27ac_active": 1,
+        "activity_state": "active_h3k27ac_background_gt_0.60",
         "combined_activity_max_500": 4,
     }
     with elements.open("w", encoding="utf-8", newline="") as handle:
@@ -724,8 +725,9 @@ def test_powerlaw_links_prioritize_an_accessible_active_promoter(tmp_path):
             "context_membership": 1,
             "regulatory_class": "distal_enhancer_like",
             "atac_normalized_cpm_per_kb": 4,
-            "mixture_high_posterior_probability": 0.8,
-            "activity_state": "active_high_mixture",
+            "h3k27ac_max_500_background_percentile": 0.8,
+            "h3k27ac_active": 1,
+            "activity_state": "active_h3k27ac_background_gt_0.60",
             "combined_activity_max_500": 4,
             "blacklist_overlap": 0,
         },
@@ -739,8 +741,9 @@ def test_powerlaw_links_prioritize_an_accessible_active_promoter(tmp_path):
             "context_membership": 1,
             "regulatory_class": "promoter_associated",
             "atac_normalized_cpm_per_kb": 10,
-            "mixture_high_posterior_probability": 0.9,
-            "activity_state": "active_high_mixture",
+            "h3k27ac_max_500_background_percentile": 0.9,
+            "h3k27ac_active": 1,
+            "activity_state": "active_h3k27ac_background_gt_0.60",
             "combined_activity_max_500": 10,
             "blacklist_overlap": 0,
         },
@@ -780,7 +783,6 @@ def test_powerlaw_links_prioritize_an_accessible_active_promoter(tmp_path):
         configured_resolution=100,
         maximum_distance=10_000,
         pseudocount_fraction=0.01,
-        posterior_threshold=0.5,
         observed_contact_path=None,
         nodes_output=nodes,
         edges_output=edges,
@@ -842,7 +844,8 @@ def test_promoter_activity_uses_inclusive_500_bp_summit_distance(tmp_path):
             "context_membership": 0,
             "regulatory_class": "distal",
             "atac_normalized_cpm_per_kb": 0,
-            "mixture_high_posterior_probability": "",
+            "h3k27ac_max_500_background_percentile": "",
+            "h3k27ac_active": 0,
             "activity_state": "not_accessible",
             "combined_activity_max_500": 0,
             "blacklist_overlap": 0,
@@ -864,8 +867,9 @@ def test_promoter_activity_uses_inclusive_500_bp_summit_distance(tmp_path):
                 "context_membership": 1,
                 "regulatory_class": regulatory_class,
                 "atac_normalized_cpm_per_kb": 2,
-                "mixture_high_posterior_probability": 0.8,
-                "activity_state": "active_high_mixture",
+                "h3k27ac_max_500_background_percentile": 0.8,
+                "h3k27ac_active": 1,
+                "activity_state": "active_h3k27ac_background_gt_0.60",
                 "combined_activity_max_500": 2,
                 "blacklist_overlap": 0,
             }
@@ -901,7 +905,6 @@ def test_promoter_activity_uses_inclusive_500_bp_summit_distance(tmp_path):
         configured_resolution=100,
         maximum_distance=10_000,
         pseudocount_fraction=0.01,
-        posterior_threshold=0.5,
         observed_contact_path=None,
         nodes_output=tmp_path / "nodes.tsv.gz",
         edges_output=tmp_path / "edges.tsv.gz",

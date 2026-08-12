@@ -34,10 +34,7 @@ if NEAREST_TSS_LINKS:
             metrics=NEAREST_TSS_ENHANCER_METRICS
         params:
             contexts=ACTIVITY_CONTEXTS,
-            enhancer_classes=NEAREST_TSS_LINKS["enhancer_classes"],
-            promoter_posterior_threshold=float(
-                NEAREST_TSS_LINKS["promoter_posterior_threshold"]
-            )
+            enhancer_classes=NEAREST_TSS_LINKS["enhancer_classes"]
         resources:
             mem_mb=8000
         conda:

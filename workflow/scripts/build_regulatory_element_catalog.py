@@ -20,7 +20,6 @@ metrics = build_regulatory_catalog(
         str(context): Path(str(path))
         for context, path in dict(snakemake.params.element_paths).items()
     },
-    output_mixtures=Path(str(snakemake.output.mixtures)),
     output_summary=Path(str(snakemake.output.summary)),
     output_metrics=Path(str(snakemake.output.metrics)),
     output_provenance=Path(str(snakemake.output.provenance)),

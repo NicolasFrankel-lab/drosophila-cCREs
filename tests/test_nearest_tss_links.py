@@ -18,7 +18,8 @@ CATALOG_FIELDS = (
     "context_membership",
     "regulatory_class",
     "atac_normalized_cpm_per_kb",
-    "mixture_high_posterior_probability",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_active",
     "activity_state",
     "combined_activity_max_500",
     "blacklist_overlap",
@@ -49,8 +50,11 @@ def _catalog_row(
         "context_membership": int(member),
         "regulatory_class": regulatory_class,
         "atac_normalized_cpm_per_kb": 4 if member else 0,
-        "mixture_high_posterior_probability": posterior if member else "",
-        "activity_state": "active_high_mixture" if member else "inactive_in_context",
+        "h3k27ac_max_500_background_percentile": posterior if member else "",
+        "h3k27ac_active": int(member),
+        "activity_state": (
+            "active_h3k27ac_background_gt_0.60" if member else "inactive_in_context"
+        ),
         "combined_activity_max_500": 3 if member else 0,
         "blacklist_overlap": 0,
     }
@@ -137,7 +141,6 @@ def test_wide_nearest_tss_table_keeps_one_enhancer_row_and_ties(tmp_path):
         promoters_path=promoters,
         contexts=["c1", "c2"],
         enhancer_classes=["proximal_enhancer_like", "distal_enhancer_like"],
-        promoter_posterior_threshold=0.5,
         output=output,
         metrics_output=tmp_path / "wide.json",
     )
@@ -206,7 +209,6 @@ def test_wide_nearest_tss_output_is_byte_deterministic(tmp_path):
             promoters_path=promoters,
             contexts=["c1"],
             enhancer_classes=["proximal_enhancer_like", "distal_enhancer_like"],
-            promoter_posterior_threshold=0.5,
             output=output,
             metrics_output=tmp_path / f"wide-{index}.json",
         )

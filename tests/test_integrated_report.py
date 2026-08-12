@@ -7,7 +7,7 @@ from short_read_processing.integrated_report import (
     build_integrated_qc_report,
     discover_report_source_files,
 )
-from short_read_processing.regulatory_elements import MIXTURE_FIELDS, SUMMARY_FIELDS
+from short_read_processing.regulatory_elements import SUMMARY_FIELDS
 
 
 def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tmp_path):
@@ -84,17 +84,6 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
         )
     factors.write_text(_tsv_content(TMM_FACTOR_FIELDS, factor_rows))
 
-    mixtures = tmp_path / "mixtures.tsv"
-    mixture = {field: "" for field in MIXTURE_FIELDS}
-    mixture.update(
-        {
-            "context": "ctx",
-            "positive_member_n": 100,
-            "mixture_supported": 0,
-            "support_reason": "insufficient_positive_members",
-        }
-    )
-    mixtures.write_text(_tsv_content(MIXTURE_FIELDS, [mixture]))
     summary = tmp_path / "summary.tsv"
     summary.write_text(
         _tsv_content(
@@ -103,16 +92,13 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
                 {
                     "context": "ctx",
                     "regulatory_class": "distal_enhancer_like",
-                    "mixture_component": "high",
-                    "mixture_supported": 0,
-                    "guardrail_failures": "insufficient_positive_members",
+                    "h3k27ac_active": 1,
+                    "activity_state": "active_h3k27ac_background_gt_0.60",
                     "element_n": 10,
                 }
             ],
         )
     )
-    mixture_svg = tmp_path / "mixtures.svg"
-    mixture_svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
     contact_metrics = tmp_path / "contact-metrics.json"
     contact_metrics.write_text(
         json.dumps(
@@ -187,9 +173,7 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
         "activity_metrics": activity_metrics,
         "regulatory_element_metrics": catalog_metrics,
         "normalization_factors": factors,
-        "mixture_models": mixtures,
         "regulatory_element_summary": summary,
-        "mixture_distributions": mixture_svg,
         "nearest_tss_enhancer_candidates": nearest_candidates,
         "nearest_tss_enhancer_metrics": nearest_metrics,
         "contact_graph_metrics": contact_metrics,
@@ -238,13 +222,12 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
         pdf_renderer=fake_pdf_renderer,
     )
 
-    assert result["mixture_warning_count"] == 1
     assert result["contact_links"]["observed_context_count"] == 1
     assert "Default nearest-TSS enhancer candidates" in output_html.read_text()
     assert "Optional context contact links and candidate genes" in output_html.read_text()
     assert "Nearest-active-promoter candidates" in output_html.read_text()
     assert "Focused distance candidates" in output_html.read_text()
-    assert "insufficient_positive_members" in output_html.read_text()
+    assert "&gt; 0.60 background percentile" in output_html.read_text()
     assert first_hashes == tuple(
         sha256_file(path) for path in (output_html, output_pdf, output_metrics)
     )

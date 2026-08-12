@@ -68,11 +68,10 @@ digraph workflow {
     units [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
     exact [label="Exact master-interval\nraw counts + CPM/kb", fillcolor="#fff4d8"];
     background [label="10-kb autosomal\nbackground counts", fillcolor="#fff4d8"];
-    windows [label="Three 500-bp max windows +\ncentered 1-kb H3K27ac window\nraw fragment counts", fillcolor="#fff4d8"];
+    windows [label="Three 500-bp summit windows\nraw H3K27ac fragment counts", fillcolor="#fff4d8"];
     tmm [label="Assay-specific background TMM\nfactors", fillcolor="#fff0c7"];
-    quantify [label="Normalized context signals +\nmax3, centered total, and\nnonmember-background ranks\nquantification checkpoint", fillcolor="#ffe5a8"];
-    mixture [label="Guarded max3\ntwo-Gaussian fit", fillcolor="#f7e4b2"];
-    catalog [label="Posterior/TSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
+    quantify [label="Normalized context signals +\nmax3 nonmember-background\npercentiles\nquantification checkpoint", fillcolor="#ffe5a8"];
+    catalog [label="Max3 percentile activity +\nTSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
     catalogbundle [label="Checksummed completed catalog\ndownstream restart bundle", shape=note, fillcolor="#f7e4b2"];
     browser [label="Mean TMM ATAC + H3 tracks\nDHS/cCRE IGV bundles", fillcolor="#e1f0f7"];
     nearestwide [label="Default: one row per enhancer\nnearest annotated TSS ties +\ncontext promoter activity", fillcolor="#dbeedc"];
@@ -80,9 +79,9 @@ digraph workflow {
     normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
     decay [label="Context contact decay +\natlas-wide power-law model", fillcolor="#d8eeea"];
     links [label="Optional element--promoter graph +\ncomplete gene candidates", fillcolor="#c7e5df"];
-    focused [label="Enhancer posterior + contact O/E filter\nobserved-contact candidates", fillcolor="#b9ddd6"];
-    nearest [label="Supplement: enhancer posterior +\nnearest active TSS per context", fillcolor="#dbeedc"];
-    distancefocused [label="Enhancer posterior + active promoter\ndistance-ranked candidates\nnearest-TSS baselines", fillcolor="#b9ddd6"];
+    focused [label="Catalog-active enhancer + contact O/E filter\nobserved-contact candidates", fillcolor="#b9ddd6"];
+    nearest [label="Supplement: catalog-active enhancer +\nnearest active TSS per context", fillcolor="#dbeedc"];
+    distancefocused [label="Catalog-active enhancer + active promoter\ndistance-ranked candidates\nnearest-TSS baselines", fillcolor="#b9ddd6"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
 
@@ -95,7 +94,7 @@ digraph workflow {
     exact -> quantify;
     tmm -> quantify;
     windows -> quantify;
-    quantify -> mixture -> catalog;
+    quantify -> catalog;
     units -> browser [style=dashed];
     tmm -> browser;
     catalog -> browser;

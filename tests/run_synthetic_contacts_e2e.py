@@ -57,7 +57,8 @@ CATALOG_FIELDS = (
     "context_membership",
     "regulatory_class",
     "atac_normalized_cpm_per_kb",
-    "mixture_high_posterior_probability",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_active",
     "activity_state",
     "combined_activity_max_500",
     "blacklist_overlap",
@@ -171,8 +172,13 @@ def write_catalog_bundle(runtime: Path, sample_sheet: Path) -> tuple[Path, Path]
                     "context_membership": 1,
                     "regulatory_class": regulatory_class,
                     "atac_normalized_cpm_per_kb": 100.0,
-                    "mixture_high_posterior_probability": posterior,
-                    "activity_state": "active" if posterior >= 0.5 else "low_h3k27ac",
+                    "h3k27ac_max_500_background_percentile": posterior,
+                    "h3k27ac_active": int(posterior > 0.60 and not blacklist),
+                    "activity_state": (
+                        "active_h3k27ac_background_gt_0.60"
+                        if posterior > 0.60 and not blacklist
+                        else "below_h3k27ac_background_threshold"
+                    ),
                     "combined_activity_max_500": combined,
                     "blacklist_overlap": blacklist,
                 }
@@ -565,7 +571,7 @@ def validate_outputs(
             if not focused:
                 raise AssertionError(f"Observed focused candidate table is empty: {context}")
             if any(
-                float(row["element_h3k27ac_posterior"]) < 0.5
+                float(row["element_h3k27ac_background_percentile"]) < 0.5
                 or float(row["best_observed_over_expected"]) < 1.0
                 for row in focused
             ):

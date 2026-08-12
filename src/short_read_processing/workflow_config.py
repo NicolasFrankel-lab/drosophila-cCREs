@@ -70,7 +70,7 @@ ACTIVITY_FIELDS = {
     "atac_browser_extension_bp",
     "normalization",
     "h3k27ac_signal",
-    "mixture_model",
+    "h3k27ac_activity_percentile_threshold",
 }
 ACTIVITY_LIBRARY_FIELDS = {
     "id",
@@ -110,7 +110,6 @@ CONTACT_FIELDS = {
     "promoter_width_bp",
     "maximum_distance_bp",
     "pseudocount_fraction",
-    "promoter_posterior_threshold",
     "normalization",
     "promoter_activity",
     "link_score",
@@ -130,7 +129,6 @@ NEAREST_TSS_LINK_FIELDS = {
     "promoter_annotation_checksum",
     "chromosome_scope",
     "promoter_width_bp",
-    "promoter_posterior_threshold",
     "enhancer_classes",
     "promoter_activity",
     "candidate_assignment",
@@ -395,7 +393,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity master {field} is not a SHA-256 digest"
                 )
-        if activity["schema_version"] != 4:
+        if activity["schema_version"] != 5:
             raise AcquisitionError("Unsupported activity schema version")
         if int(activity["atac_fragment_maximum"]) < 2:
             raise AcquisitionError("Activity ATAC fragment maximum is invalid")
@@ -403,11 +401,12 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Activity ATAC browser extension must be 150 bp")
         if activity["normalization"] != "background_tmm_10kb_autosomes_v1":
             raise AcquisitionError("Unsupported activity normalization method")
-        if (
-            activity["h3k27ac_signal"] != "summit_windows_background_tmm_v2"
-            or activity["mixture_model"] != "guarded_two_gaussian_log10_v1"
-        ):
+        if activity["h3k27ac_signal"] != "summit_max3_background_tmm_v3":
             raise AcquisitionError("Unsupported regulatory-element method")
+        if float(activity["h3k27ac_activity_percentile_threshold"]) != 0.60:
+            raise AcquisitionError(
+                "H3K27ac activity percentile threshold must be 0.60"
+            )
         contexts = activity["contexts"]
         if (
             not isinstance(contexts, list)
@@ -616,7 +615,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             NEAREST_TSS_LINK_FIELDS,
             "Nearest-TSS links",
         )
-        if nearest_tss_links["schema_version"] != 1:
+        if nearest_tss_links["schema_version"] != 2:
             raise AcquisitionError("Unsupported nearest-TSS links schema version")
         if not nearest_tss_links["promoter_annotation"] or not CHECKSUM_RE.fullmatch(
             str(nearest_tss_links["promoter_annotation_checksum"])
@@ -633,19 +632,13 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError(
                 "Nearest-TSS promoter display width must be 1000 bp"
             )
-        if not 0 <= float(
-            nearest_tss_links["promoter_posterior_threshold"]
-        ) <= 1:
-            raise AcquisitionError(
-                "Nearest-TSS promoter posterior threshold must be in [0, 1]"
-            )
         if nearest_tss_links["enhancer_classes"] != [
             "proximal_enhancer_like",
             "distal_enhancer_like",
         ]:
             raise AcquisitionError("Unsupported nearest-TSS enhancer classes")
         expected_nearest_methods = {
-            "promoter_activity": "summit_within_500bp_max_v2",
+            "promoter_activity": "summit_within_500bp_catalog_activity_v3",
             "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
         }
         for field, expected in expected_nearest_methods.items():
@@ -667,7 +660,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         if not isinstance(contacts, dict):
             raise AcquisitionError("contacts must be a mapping")
         _required(contacts, CONTACT_FIELDS, "Contacts")
-        if contacts["schema_version"] != 1:
+        if contacts["schema_version"] != 2:
             raise AcquisitionError("Unsupported contacts schema version")
         if config["reference"]["name"] != "dm6":
             raise AcquisitionError("The configured contact atlas is dm6-only")
@@ -695,14 +688,6 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Contact maximum distance must be positive")
         if not 0 <= float(contacts["pseudocount_fraction"]) <= 1:
             raise AcquisitionError("Contact pseudocount fraction must be in [0, 1]")
-        if not 0 <= float(contacts["promoter_posterior_threshold"]) <= 1:
-            raise AcquisitionError("Promoter posterior threshold must be in [0, 1]")
-        if not 0 <= float(
-            contacts.get("candidate_element_posterior_threshold", 0.5)
-        ) <= 1:
-            raise AcquisitionError(
-                "Candidate element posterior threshold must be in [0, 1]"
-            )
         if float(
             contacts.get("candidate_observed_over_expected_threshold", 1.0)
         ) < 0:
@@ -711,8 +696,8 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             )
         expected_methods = {
             "normalization": "merge_counts_then_ice_retry_v2",
-            "promoter_activity": "summit_within_500bp_max_v2",
-            "link_score": "contact_weight_x_promoter_activity_posterior_v2",
+            "promoter_activity": "summit_within_500bp_catalog_activity_v3",
+            "link_score": "contact_weight_x_promoter_activity_percentile_v3",
         }
         for field, expected in expected_methods.items():
             if contacts[field] != expected:

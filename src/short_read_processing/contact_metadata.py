@@ -231,7 +231,7 @@ def default_dm6_contact_config(
             return str(resolved)
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_manifest": display(manifest_path),
         "source_manifest_sha256": sha256_file(manifest_path),
         "promoter_annotation": display(annotation),
@@ -242,11 +242,9 @@ def default_dm6_contact_config(
         "promoter_width_bp": 1000,
         "maximum_distance_bp": 1_000_000,
         "pseudocount_fraction": 0.01,
-        "promoter_posterior_threshold": 0.5,
-        "candidate_element_posterior_threshold": 0.5,
         "candidate_observed_over_expected_threshold": 1.0,
         "normalization": "merge_counts_then_ice_retry_v2",
-        "promoter_activity": "summit_within_500bp_max_v2",
-        "link_score": "contact_weight_x_promoter_activity_posterior_v2",
+        "promoter_activity": "summit_within_500bp_catalog_activity_v3",
+        "link_score": "contact_weight_x_promoter_activity_percentile_v3",
         "contexts": [dict(row) for row in DM6_ATLAS_CONTACT_CONTEXTS],
     }

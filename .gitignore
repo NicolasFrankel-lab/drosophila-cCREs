@@ -19,6 +19,8 @@ tests/workflow_results/
 data/reviewed/
 /configs/*.*.dm6.yaml
 /configs/*.*.hg38.yaml
+/configs/drosophila-atlas.yaml
+/configs/*.quantification.yaml
 
 # Downloaded and generated reference/data assets
 data/raw/

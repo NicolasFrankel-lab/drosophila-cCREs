@@ -333,7 +333,6 @@ def build_integrated_qc_report(
     activity_metrics = _read_json(current_files["activity_metrics"])
     catalog_metrics = _read_json(current_files["regulatory_element_metrics"])
     factors = _read_tsv(current_files["normalization_factors"])
-    mixtures = _read_tsv(current_files["mixture_models"])
     summary = _read_tsv(current_files["regulatory_element_summary"])
     nearest_tss_metrics = _read_json(current_files["nearest_tss_enhancer_metrics"])
     contact_metrics = (
@@ -345,11 +344,6 @@ def build_integrated_qc_report(
     cross_correlation = _cross_correlation_rows(records)
 
     warnings = []
-    for mixture in mixtures:
-        if mixture["mixture_supported"] != "1":
-            warnings.append(
-                f"{mixture['context']}: {mixture['support_reason']}"
-            )
     for library in excluded:
         warnings.append(f"{library['id']} rejected: {library.get('reason', 'no reason recorded')}")
     accepted_ids = {str(library["id"]) for library in activity["libraries"]}
@@ -377,7 +371,7 @@ def build_integrated_qc_report(
 
     active_counts: dict[str, dict[str, int]] = {context: {} for context in contexts}
     for row in summary:
-        if row["mixture_component"] != "high":
+        if row["h3k27ac_active"] != "1":
             continue
         context = row["context"]
         element_class = row["regulatory_class"]
@@ -398,20 +392,6 @@ def build_integrated_qc_report(
         ]
         for row in factors
     ]
-    mixture_rows = [
-        [
-            row["context"],
-            int(row["positive_member_n"]),
-            row["mixture_supported"] == "1",
-            row["support_reason"],
-            float(row["delta_bic"]) if row["delta_bic"] else None,
-            float(row["ashman_d"]) if row["ashman_d"] else None,
-            float(row["low_weight"]) if row["low_weight"] else None,
-            float(row["high_weight"]) if row["high_weight"] else None,
-        ]
-        for row in mixtures
-    ]
-
     provenance = config.get("provenance", {})
     provenance_rows = [
         [key, value]
@@ -468,10 +448,6 @@ def build_integrated_qc_report(
         for record in tss_profiles
     ) or '<p class="muted">No upstream TSS-profile plots were supplied.</p>'
 
-    mixture_svg = current_files["mixture_distributions"].read_text(encoding="utf-8")
-    if "<svg" not in mixture_svg:
-        raise ValueError("Mixture distribution artifact is not SVG")
-
     master_context_peaks = [
         (context, float(master_metrics.get("context_peak_counts", {}).get(context, 0)))
         for context in contexts
@@ -504,7 +480,7 @@ def build_integrated_qc_report(
     nearest_tss_section = f"""
 <section class="stage"><h2>6. Default nearest-TSS enhancer candidates</h2>
 {_cards([('Enhancers', nearest_tss_metrics.get('enhancer_count')), ('Enhancers with tied nearest TSSs', nearest_tss_metrics.get('nearest_tss_tie_element_count')), ('No same-chromosome TSS', nearest_tss_metrics.get('no_same_chromosome_promoter_count')), ('Assignment', 'nearest annotated TSS')])}
-<p>This contact-independent branch has one row per proximal or distal enhancer. It retains every exact nearest-distance TSS tie in that row, reports gene and transcript identifiers, and adds per-context element activity plus whether any tied nearest promoter is active. Promoter activity requires a context-member master-DHS summit within inclusive ±500 bp of the exact TSS and H3K27ac posterior at or above the configured threshold. Enhancers are not filtered by H3K27ac posterior in this atlas-wide table.</p>
+<p>This contact-independent branch has one row per proximal or distal enhancer. It retains every exact nearest-distance TSS tie in that row, reports gene and transcript identifiers, and adds per-context element activity plus whether any tied nearest promoter is active. Promoter activity requires a catalog-active context-member master-DHS summit within inclusive ±500 bp of the exact TSS. Enhancers are not filtered from this atlas-wide table by their own activity state.</p>
 {_bar_chart('Enhancers whose nearest promoter is active by context', [(context, float(nearest_active_counts.get(context, 0))) for context in contexts], color='#3b8f6f')}
 </section>
 """
@@ -564,14 +540,13 @@ def build_integrated_qc_report(
     .profile { margin:0; border:1px solid #d6dfe7; padding:3px; break-inside:avoid; }
     .profile img { width:100%; display:block; }
     .profile figcaption { text-align:center; color:#59697b; font-size:7pt; }
-    .mixture svg { width:100%; height:auto; }
     .two-column { display:grid; grid-template-columns:1fr 1fr; gap:13px; }
     code { font-size:7.5pt; }
     """
     warning_html = (
         "".join(f'<div class="warning">{html.escape(value)}</div>' for value in warnings)
         if warnings
-        else '<div class="ok">No rejected libraries, missing upstream QC rows, or failed mixture guardrails were recorded.</div>'
+        else '<div class="ok">No rejected libraries or missing upstream QC rows were recorded.</div>'
     )
     report_html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{html.escape(config['project'])} integrated QC report</title><style>{css}</style></head>
@@ -580,7 +555,7 @@ def build_integrated_qc_report(
 <p class="subtitle">Project <strong>{html.escape(str(config['project']))}</strong> · run <strong>{html.escape(str(config['run_id']))}</strong> · genome <strong>{html.escape(str(config['reference']['name']))}</strong></p>
 {_cards([('Contexts', len(contexts)), ('Accepted libraries', len(activity['libraries'])), ('Excluded libraries', len(excluded)), ('Master DHSs', master_metrics.get('master_dhs_count')), ('Active calls', sum(sum(value.values()) for value in active_counts.values()))])}
 <h2>Executive QC status</h2>{warning_html}
-<p>The scientific endpoint uses exact variable-width master DHS ATAC signal, summit-centered maximum-of-three H3K27ac windows, assay-specific 10-kb-background TMM, and guarded two-Gaussian classification among context-member DHSs.</p>
+<p>The scientific endpoint uses exact variable-width master DHS ATAC signal, the maximum normalized density among three summit-centered H3K27ac windows, assay-specific 10-kb-background TMM, and a context-specific empirical background percentile. Activity requires a blacklist-clear context member above the 0.60 percentile of blacklist-clear DHSs that do not contribute to that context.</p>
 
 <section class="stage"><h2>1. Inputs and provenance</h2>
 <h3>Workflow provenance</h3>{_table(['Field', 'Value'], provenance_rows)}
@@ -609,10 +584,8 @@ def build_integrated_qc_report(
 </section>
 
 <section class="stage"><h2>5. Regulatory-element catalog</h2>
-{_cards([('Catalog rows', catalog_metrics.get('catalog_row_count')), ('Master DHSs', catalog_metrics.get('master_dhs_count')), ('Contexts', catalog_metrics.get('context_count')), ('Supported mixtures', sum(row['mixture_supported'] == '1' for row in mixtures))])}
-{_stacked_chart('High-component active elements by TSS-distance class', contexts, active_counts)}
-{_table(['Context', 'Positive member DHSs', 'Supported', 'Status / failed guards', 'ΔBIC', "Ashman D", 'Low weight', 'High weight'], mixture_rows)}
-<h3>H3K27ac member-DHS distributions and fitted mixtures</h3><div class="mixture">{mixture_svg}</div>
+{_cards([('Catalog rows', catalog_metrics.get('catalog_row_count')), ('Master DHSs', catalog_metrics.get('master_dhs_count')), ('Contexts', catalog_metrics.get('context_count')), ('Activity threshold', '> 0.60 background percentile')])}
+{_stacked_chart('Active elements by TSS-distance class', contexts, active_counts)}
 </section>
 
 {nearest_tss_section}
@@ -631,7 +604,7 @@ def build_integrated_qc_report(
     metrics = {
         "status": "ok",
         "schema_version": 2,
-        "method": "integrated_regulatory_catalog_links_qc_report_v5",
+        "method": "integrated_regulatory_catalog_links_qc_report_v6",
         "project": config["project"],
         "run_id": config["run_id"],
         "contexts": contexts,
@@ -640,9 +613,6 @@ def build_integrated_qc_report(
         "accepted_library_count": len(activity["libraries"]),
         "excluded_library_count": len(excluded),
         "upstream_qc_library_count": len(qc_rows),
-        "mixture_warning_count": sum(
-            row["mixture_supported"] != "1" for row in mixtures
-        ),
         "nearest_tss_links": nearest_tss_metrics,
         "contact_links": contact_metrics,
         "warnings": warnings,

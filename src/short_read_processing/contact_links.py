@@ -56,7 +56,7 @@ EDGE_FIELDS = (
     "promoter_activity_score",
     "promoter_atac_accessible",
     "promoter_atac_signal",
-    "promoter_h3k27ac_posterior",
+    "promoter_h3k27ac_background_percentile",
     "contact_strategy",
     "contact_assay",
     "contact_match",
@@ -78,7 +78,7 @@ GENE_FIELDS = (
     "element_end",
     "element_summit",
     "regulatory_class",
-    "element_h3k27ac_posterior",
+    "element_h3k27ac_background_percentile",
     "element_combined_activity",
     "element_blacklist_overlap",
     "gene_id",
@@ -90,7 +90,7 @@ GENE_FIELDS = (
     "minimum_distance_bp",
     "best_promoter_active",
     "best_promoter_atac_signal",
-    "best_promoter_h3k27ac_posterior",
+    "best_promoter_h3k27ac_background_percentile",
     "contact_strategy",
     "contact_assay",
     "contact_match",
@@ -126,7 +126,7 @@ NEAREST_ACTIVE_PROMOTER_GENE_FIELDS = (
     "element_end",
     "element_summit",
     "regulatory_class",
-    "element_h3k27ac_posterior",
+    "element_h3k27ac_background_percentile",
     "element_combined_activity",
     "element_blacklist_overlap",
     "promoter_id",
@@ -142,7 +142,7 @@ NEAREST_ACTIVE_PROMOTER_GENE_FIELDS = (
     "distance_bp",
     "nearest_active_tss_tie_count",
     "promoter_atac_signal",
-    "promoter_h3k27ac_posterior",
+    "promoter_h3k27ac_background_percentile",
     "promoter_combined_activity",
     "evidence_type",
 )
@@ -167,7 +167,7 @@ NODE_FIELDS = (
     "regulatory_class",
     "atac_accessible",
     "atac_signal",
-    "h3k27ac_posterior",
+    "h3k27ac_background_percentile",
     "combined_activity",
     "active",
     "blacklist_overlap",
@@ -197,7 +197,8 @@ class Element:
     regulatory_class: str
     activity_state: str
     atac_signal: float
-    h3k27ac_posterior: float | None
+    h3k27ac_background_percentile: float | None
+    h3k27ac_active: int
     combined_activity: float
     blacklist_overlap: int
 
@@ -207,7 +208,7 @@ class PromoterActivity:
     dhs_ids: str
     accessible: int
     atac_signal: float
-    h3k27ac_posterior: float | None
+    h3k27ac_background_percentile: float | None
     combined_activity: float
     activity_score: float
     active: int
@@ -448,7 +449,8 @@ def read_context_elements(path: Path, context: str) -> tuple[list[Element], bool
         "context_membership",
         "regulatory_class",
         "atac_normalized_cpm_per_kb",
-        "mixture_high_posterior_probability",
+        "h3k27ac_max_500_background_percentile",
+        "h3k27ac_active",
         "activity_state",
         "combined_activity_max_500",
     }
@@ -468,8 +470,8 @@ def read_context_elements(path: Path, context: str) -> tuple[list[Element], bool
             if master_id in seen:
                 raise ValueError(f"{path} repeats {master_id}")
             seen.add(master_id)
-            posterior_text = row["mixture_high_posterior_probability"]
-            posterior = float(posterior_text) if posterior_text else None
+            percentile_text = row["h3k27ac_max_500_background_percentile"]
+            percentile = float(percentile_text) if percentile_text else None
             elements.append(
                 Element(
                     master_dhs_id=master_id,
@@ -480,7 +482,8 @@ def read_context_elements(path: Path, context: str) -> tuple[list[Element], bool
                     regulatory_class=row["regulatory_class"],
                     activity_state=row["activity_state"],
                     atac_signal=float(row["atac_normalized_cpm_per_kb"]),
-                    h3k27ac_posterior=posterior,
+                    h3k27ac_background_percentile=percentile,
+                    h3k27ac_active=int(row["h3k27ac_active"]),
                     combined_activity=float(row["combined_activity_max_500"]),
                     blacklist_overlap=(
                         0
@@ -497,7 +500,6 @@ def read_context_elements(path: Path, context: str) -> tuple[list[Element], bool
 def promoter_activities(
     promoters: list[Promoter],
     elements: list[Element],
-    posterior_threshold: float,
 ) -> dict[str, PromoterActivity]:
     """Summarize DHSs whose summits lie within 500 bp of each promoter TSS."""
 
@@ -520,20 +522,23 @@ def promoter_activities(
             chromosome_summits, promoter.tss + PROMOTER_SUPPORT_DISTANCE_BP
         )
         supporting = values[start:stop]
-        posteriors = [
-            element.h3k27ac_posterior
-            for element in supporting
-            if element.h3k27ac_posterior is not None
+        eligible_supporting = [
+            element for element in supporting if not element.blacklist_overlap
         ]
-        posterior = max(posteriors) if posteriors else None
+        percentiles = [
+            element.h3k27ac_background_percentile
+            for element in eligible_supporting
+            if element.h3k27ac_background_percentile is not None
+        ]
+        percentile = max(percentiles) if percentiles else None
         combined = max(
-            (element.combined_activity for element in supporting), default=0.0
+            (element.combined_activity for element in eligible_supporting), default=0.0
         )
         activity_score = max(
             (
-                element.combined_activity * element.h3k27ac_posterior
-                for element in supporting
-                if element.h3k27ac_posterior is not None
+                element.combined_activity * element.h3k27ac_background_percentile
+                for element in eligible_supporting
+                if element.h3k27ac_background_percentile is not None
             ),
             default=0.0,
         )
@@ -541,15 +546,13 @@ def promoter_activities(
             dhs_ids=";".join(element.master_dhs_id for element in supporting),
             accessible=int(bool(supporting)),
             atac_signal=max(
-                (element.atac_signal for element in supporting), default=0.0
+                (element.atac_signal for element in eligible_supporting), default=0.0
             ),
-            h3k27ac_posterior=posterior,
+            h3k27ac_background_percentile=percentile,
             combined_activity=combined,
             activity_score=activity_score,
             active=int(
-                bool(supporting)
-                and posterior is not None
-                and posterior >= posterior_threshold
+                any(element.h3k27ac_active for element in supporting)
             ),
         )
     return result
@@ -713,7 +716,9 @@ def _element_gene_rows(
                 "element_end": element.end,
                 "element_summit": element.summit,
                 "regulatory_class": element.regulatory_class,
-                "element_h3k27ac_posterior": _format(element.h3k27ac_posterior),
+                "element_h3k27ac_background_percentile": _format(
+                    element.h3k27ac_background_percentile
+                ),
                 "element_combined_activity": _format(element.combined_activity),
                 "element_blacklist_overlap": element.blacklist_overlap,
                 "gene_id": gene_id,
@@ -727,8 +732,8 @@ def _element_gene_rows(
                 "minimum_distance_bp": min(int(row["distance_bp"]) for row in rows),
                 "best_promoter_active": best["promoter_active"],
                 "best_promoter_atac_signal": best["promoter_atac_signal"],
-                "best_promoter_h3k27ac_posterior": best[
-                    "promoter_h3k27ac_posterior"
+                "best_promoter_h3k27ac_background_percentile": best[
+                    "promoter_h3k27ac_background_percentile"
                 ],
                 "contact_strategy": best["contact_strategy"],
                 "contact_assay": best["contact_assay"],
@@ -796,15 +801,13 @@ def _active_contact_enhancer_gene_rows(
     element: Element,
     edge_rows: list[dict[str, Any]],
     *,
-    element_posterior_threshold: float,
     observed_over_expected_threshold: float,
 ) -> list[dict[str, Any]]:
     """Project threshold-qualified observed enhancer contacts to genes."""
 
     if (
         element.regulatory_class not in ENHANCER_REGULATORY_CLASSES
-        or element.h3k27ac_posterior is None
-        or element.h3k27ac_posterior < element_posterior_threshold
+        or not element.h3k27ac_active
     ):
         return []
     qualifying_edges = [
@@ -821,7 +824,6 @@ def _focused_candidate_elements(
     *,
     context: str,
     nodes_path: Path,
-    element_posterior_threshold: float,
 ) -> tuple[dict[str, Element], set[str], int]:
     """Read threshold-qualified enhancer nodes for a focused projection."""
 
@@ -846,9 +848,9 @@ def _focused_candidate_elements(
             if master_dhs_id in all_element_ids:
                 raise ValueError(f"{nodes_path} repeats element {master_dhs_id}")
             all_element_ids.add(master_dhs_id)
-            posterior = (
-                float(row["h3k27ac_posterior"])
-                if row["h3k27ac_posterior"]
+            percentile = (
+                float(row["h3k27ac_background_percentile"])
+                if row["h3k27ac_background_percentile"]
                 else None
             )
             element = Element(
@@ -860,14 +862,14 @@ def _focused_candidate_elements(
                 regulatory_class=row["regulatory_class"],
                 activity_state="",
                 atac_signal=float(row["atac_signal"]),
-                h3k27ac_posterior=posterior,
+                h3k27ac_background_percentile=percentile,
+                h3k27ac_active=int(row["active"]),
                 combined_activity=float(row["combined_activity"]),
                 blacklist_overlap=int(row["blacklist_overlap"]),
             )
             if (
                 element.regulatory_class in ENHANCER_REGULATORY_CLASSES
-                and posterior is not None
-                and posterior >= element_posterior_threshold
+                and element.h3k27ac_active
             ):
                 elements[element.master_dhs_id] = element
     return elements, all_element_ids, element_node_count
@@ -877,18 +879,14 @@ def build_nearest_active_promoter_gene_candidates(
     *,
     context: str,
     nodes_path: Path,
-    element_posterior_threshold: float,
     output: Path,
     metrics_output: Path,
 ) -> dict[str, Any]:
     """Assign qualifying enhancers to the nearest supported active TSS."""
 
-    if not 0 <= element_posterior_threshold <= 1:
-        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
     elements, all_element_ids, element_node_count = _focused_candidate_elements(
         context=context,
         nodes_path=nodes_path,
-        element_posterior_threshold=element_posterior_threshold,
     )
 
     active_element_ids: set[str] = set()
@@ -1008,8 +1006,8 @@ def build_nearest_active_promoter_gene_candidates(
                     "element_end": element.end,
                     "element_summit": element.summit,
                     "regulatory_class": element.regulatory_class,
-                    "element_h3k27ac_posterior": _format(
-                        element.h3k27ac_posterior
+                    "element_h3k27ac_background_percentile": _format(
+                        element.h3k27ac_background_percentile
                     ),
                     "element_combined_activity": _format(
                         element.combined_activity
@@ -1036,8 +1034,8 @@ def build_nearest_active_promoter_gene_candidates(
                     "distance_bp": minimum_distance,
                     "nearest_active_tss_tie_count": tie_count,
                     "promoter_atac_signal": promoter["atac_signal"],
-                    "promoter_h3k27ac_posterior": promoter[
-                        "h3k27ac_posterior"
+                    "promoter_h3k27ac_background_percentile": promoter[
+                        "h3k27ac_background_percentile"
                     ],
                     "promoter_combined_activity": promoter["combined_activity"],
                     "evidence_type": "nearest_active_promoter_tss",
@@ -1049,13 +1047,12 @@ def build_nearest_active_promoter_gene_candidates(
         "context": context,
         "method": "nearest_active_promoter_gene_candidates_v1",
         "evidence_type": "nearest_active_promoter_tss",
-        "element_posterior_threshold": element_posterior_threshold,
         "promoter_activity_definition": (
             "active flag inherited from the context promoter node"
         ),
         "selection": (
-            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
-            ">= element threshold; nearest same-chromosome active promoter TSS"
+            "proximal_or_distal_enhancer_like and catalog H3K27ac active; "
+            "nearest same-chromosome active promoter TSS"
         ),
         "distance_limit_bp": None,
         "exact_distance_ties_retained": True,
@@ -1086,22 +1083,18 @@ def build_active_contact_enhancer_gene_candidates(
     context: str,
     nodes_path: Path,
     edges_path: Path,
-    element_posterior_threshold: float,
     observed_over_expected_threshold: float,
     output: Path,
     metrics_output: Path,
 ) -> dict[str, Any]:
     """Derive the focused enhancer--gene table from completed graph tables."""
 
-    if not 0 <= element_posterior_threshold <= 1:
-        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
     if observed_over_expected_threshold < 0:
         raise ValueError("Candidate observed/expected threshold cannot be negative")
 
     elements, all_element_ids, element_node_count = _focused_candidate_elements(
         context=context,
         nodes_path=nodes_path,
-        element_posterior_threshold=element_posterior_threshold,
     )
 
     candidate_count = 0
@@ -1138,7 +1131,6 @@ def build_active_contact_enhancer_gene_candidates(
                 rows = _active_contact_enhancer_gene_rows(
                     element,
                     edge_rows,
-                    element_posterior_threshold=element_posterior_threshold,
                     observed_over_expected_threshold=(
                         observed_over_expected_threshold
                     ),
@@ -1153,11 +1145,10 @@ def build_active_contact_enhancer_gene_candidates(
         "schema_version": 1,
         "context": context,
         "method": "active_contact_enhancer_gene_candidates_v1",
-        "element_posterior_threshold": element_posterior_threshold,
         "observed_over_expected_threshold": observed_over_expected_threshold,
         "selection": (
-            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
-            ">= element threshold and observed_over_expected >= contact threshold"
+            "proximal_or_distal_enhancer_like and catalog H3K27ac active and "
+            "observed_over_expected >= contact threshold"
         ),
         "element_node_count": element_node_count,
         "qualifying_element_count": len(elements),
@@ -1199,15 +1190,12 @@ def _nearest_tss_summary(
 def _active_distance_enhancer_gene_rows(
     element: Element,
     edge_rows: list[dict[str, Any]],
-    *,
-    element_posterior_threshold: float,
 ) -> list[dict[str, Any]]:
     """Project active-promoter distance-model edges to ranked genes."""
 
     if (
         element.regulatory_class not in ENHANCER_REGULATORY_CLASSES
-        or element.h3k27ac_posterior is None
-        or element.h3k27ac_posterior < element_posterior_threshold
+        or not element.h3k27ac_active
     ):
         return []
     if any(row["contact_strategy"] != "powerlaw" for row in edge_rows):
@@ -1244,18 +1232,14 @@ def build_active_distance_enhancer_gene_candidates(
     context: str,
     nodes_path: Path,
     edges_path: Path,
-    element_posterior_threshold: float,
     output: Path,
     metrics_output: Path,
 ) -> dict[str, Any]:
     """Derive ranked active-promoter candidates for a distance-only context."""
 
-    if not 0 <= element_posterior_threshold <= 1:
-        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
     elements, all_element_ids, element_node_count = _focused_candidate_elements(
         context=context,
         nodes_path=nodes_path,
-        element_posterior_threshold=element_posterior_threshold,
     )
 
     candidate_count = 0
@@ -1292,7 +1276,6 @@ def build_active_distance_enhancer_gene_candidates(
                 rows = _active_distance_enhancer_gene_rows(
                     element,
                     edge_rows,
-                    element_posterior_threshold=element_posterior_threshold,
                 )
                 if rows:
                     candidate_element_ids.add(master_dhs_id)
@@ -1305,11 +1288,10 @@ def build_active_distance_enhancer_gene_candidates(
         "context": context,
         "method": "active_distance_enhancer_gene_candidates_v1",
         "evidence_type": "distance_model_active_promoter",
-        "element_posterior_threshold": element_posterior_threshold,
         "promoter_activity_required": True,
         "selection": (
-            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
-            ">= element threshold and promoter_active = 1"
+            "proximal_or_distal_enhancer_like and catalog H3K27ac active and "
+            "promoter_active = 1"
         ),
         "ranking": "powerlaw contact weight * promoter activity score",
         "nearest_tss_baselines": (
@@ -1349,7 +1331,6 @@ def build_context_links(
     configured_resolution: int,
     maximum_distance: int,
     pseudocount_fraction: float,
-    posterior_threshold: float,
     observed_contact_path: Path | None,
     nodes_output: Path,
     edges_output: Path,
@@ -1362,13 +1343,13 @@ def build_context_links(
         raise ValueError(f"Unsupported contact strategy: {strategy}")
     if maximum_distance < 1 or configured_resolution < 1:
         raise ValueError("Contact distance and resolution must be positive")
-    if not 0 <= pseudocount_fraction <= 1 or not 0 <= posterior_threshold <= 1:
-        raise ValueError("Contact pseudocount and posterior threshold must be in [0, 1]")
+    if not 0 <= pseudocount_fraction <= 1:
+        raise ValueError("Contact pseudocount fraction must be in [0, 1]")
     promoters = read_promoters(promoters_path)
     elements, blacklist_overlap_defaulted = read_context_elements(
         context_elements, context
     )
-    activities = promoter_activities(promoters, elements, posterior_threshold)
+    activities = promoter_activities(promoters, elements)
     with powerlaw_path.open(encoding="utf-8") as handle:
         powerlaw = json.load(handle)
     if strategy == "observed":
@@ -1426,12 +1407,11 @@ def build_context_links(
                 "regulatory_class": element.regulatory_class,
                 "atac_accessible": 1,
                 "atac_signal": _format(element.atac_signal),
-                "h3k27ac_posterior": _format(element.h3k27ac_posterior),
-                "combined_activity": _format(element.combined_activity),
-                "active": int(
-                    element.h3k27ac_posterior is not None
-                    and element.h3k27ac_posterior >= posterior_threshold
+                "h3k27ac_background_percentile": _format(
+                    element.h3k27ac_background_percentile
                 ),
+                "combined_activity": _format(element.combined_activity),
+                "active": element.h3k27ac_active,
                 "blacklist_overlap": element.blacklist_overlap,
             }
         )
@@ -1453,7 +1433,9 @@ def build_context_links(
                 "regulatory_class": "promoter",
                 "atac_accessible": activity.accessible,
                 "atac_signal": _format(activity.atac_signal),
-                "h3k27ac_posterior": _format(activity.h3k27ac_posterior),
+                "h3k27ac_background_percentile": _format(
+                    activity.h3k27ac_background_percentile
+                ),
                 "combined_activity": _format(activity.combined_activity),
                 "active": activity.active,
                 "blacklist_overlap": "",
@@ -1505,8 +1487,8 @@ def build_context_links(
                     "promoter_activity_score": _format(activity.activity_score),
                     "promoter_atac_accessible": activity.accessible,
                     "promoter_atac_signal": _format(activity.atac_signal),
-                    "promoter_h3k27ac_posterior": _format(
-                        activity.h3k27ac_posterior
+                    "promoter_h3k27ac_background_percentile": _format(
+                        activity.h3k27ac_background_percentile
                     ),
                     "contact_strategy": strategy,
                     "contact_assay": contact_assay,
@@ -1582,7 +1564,6 @@ def build_context_links(
         "contact_resolution_bp": resolution,
         "maximum_distance_bp": maximum_distance,
         "pseudocount_fraction": pseudocount_fraction,
-        "promoter_posterior_threshold": posterior_threshold,
         "blacklist_overlap_annotation": (
             "legacy_catalog_default_zero"
             if blacklist_overlap_defaulted
@@ -1592,8 +1573,8 @@ def build_context_links(
         "whose summits are within 500 bp of the promoter TSS",
         "promoter_support_distance_bp": PROMOTER_SUPPORT_DISTANCE_BP,
         "promoter_support_distance_inclusive": True,
-        "link_score": "contact_weight * maximum over promoter-supporting DHSs of "
-        "(combined_activity * h3k27ac_posterior)",
+        "link_score": "contact_weight * maximum over blacklist-clear promoter-supporting "
+        "DHSs of (combined_activity * h3k27ac_background_percentile)",
         "element_node_count": len(elements),
         "promoter_node_count": len(promoters),
         "active_promoter_count": sum(activity.active for activity in activities.values()),

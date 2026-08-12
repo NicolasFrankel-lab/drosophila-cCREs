@@ -383,7 +383,8 @@ def validate_outputs(
         "blacklist_overlap_bp",
         "blacklist_overlap_fraction",
         "nearest_tss_distance_bp",
-        "mixture_high_posterior_probability",
+        "h3k27ac_max_500_background_percentile",
+        "h3k27ac_active",
     }
     if not required.issubset(columns):
         raise AssertionError("Catalog lacks required annotations: " + ", ".join(sorted(required - set(columns))))
@@ -394,18 +395,22 @@ def validate_outputs(
         raise AssertionError("Blacklist-overlapping DHS was removed instead of annotated")
     if not any(row["nearest_tss_distance_bp"] for row in rows):
         raise AssertionError("Nearest-TSS distance annotation is empty")
-    posterior_values = [
-        float(row["mixture_high_posterior_probability"])
+    percentile_values = [
+        float(row["h3k27ac_max_500_background_percentile"])
         for row in rows
-        if row["mixture_high_posterior_probability"]
+        if row["h3k27ac_max_500_background_percentile"]
     ]
-    if any(value < 0 or value > 1 for value in posterior_values):
-        raise AssertionError("H3K27ac posterior is outside [0, 1]")
+    if any(value < 0 or value > 1 for value in percentile_values):
+        raise AssertionError("H3K27ac background percentile is outside [0, 1]")
 
     igv_root = activity_root / "activity/catalog/igv"
     sessions = [igv_root / "alpha.xml", igv_root / "beta.xml", activity_root / "activity/catalog/all-contexts.igv.xml"]
     for session in sessions:
-        tracks = ET.parse(session).getroot().findall("./Panel/Track")
+        tracks = [
+            track
+            for track in ET.parse(session).getroot().findall("./Panel/Track")
+            if track.attrib.get("id") != "Reference sequence"
+        ]
         if not tracks or tracks[0].attrib.get("name") != "Master DHS registry":
             raise AssertionError(f"Master DHS is not the first user track in {session}")
 
@@ -425,7 +430,7 @@ def validate_outputs(
         "master_dhs": master_count,
         "catalog_rows": len(rows),
         "blacklist_annotated_rows": len(blacklist_rows),
-        "nonblank_h3k27ac_posteriors": len(posterior_values),
+        "nonblank_h3k27ac_background_percentiles": len(percentile_values),
         "contexts": sorted(CONTEXT_TARGETS),
     }
 

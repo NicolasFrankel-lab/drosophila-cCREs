@@ -2,7 +2,6 @@ import csv
 import gzip
 import math
 from pathlib import Path
-import random
 
 import pytest
 
@@ -17,17 +16,31 @@ from short_read_processing.regulatory_elements import (
     H3K27AC_QUANTIFICATION_FIELDS,
     WINDOW_COUNT_FIELDS,
     WINDOW_FIELDS,
+    _is_h3k27ac_active,
     _read_blacklist,
     blacklist_overlap,
     build_h3k27ac_quantification,
     build_regulatory_catalog,
-    fit_guarded_mixture,
-    mixture_assignment,
     nearest_tss,
     regulatory_class,
     write_window_counts,
     write_window_definitions,
 )
+
+
+def test_h3k27ac_activity_uses_strict_060_cutoff_and_excludes_blacklist():
+    assert not _is_h3k27ac_active(
+        member=True, blacklisted=False, background_percentile=0.60
+    )
+    assert _is_h3k27ac_active(
+        member=True, blacklisted=False, background_percentile=0.600001
+    )
+    assert not _is_h3k27ac_active(
+        member=True, blacklisted=True, background_percentile=1.0
+    )
+    assert not _is_h3k27ac_active(
+        member=False, blacklisted=False, background_percentile=1.0
+    )
 
 
 def _master_files(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -60,8 +73,8 @@ def test_window_definitions_clip_boundaries_and_retain_empty_flanks(tmp_path):
     )
 
     assert metrics == {
-        "window_count": 8,
-        "countable_window_count": 7,
+        "window_count": 6,
+        "countable_window_count": 5,
         "zero_width_window_count": 1,
     }
     with gzip.open(table, "rt", newline="") as handle:
@@ -70,11 +83,7 @@ def test_window_definitions_clip_boundaries_and_retain_empty_flanks(tmp_path):
     assert (int(first["left_500"]["start"]), int(first["left_500"]["end"])) == (0, 0)
     assert (int(first["center_500"]["start"]), int(first["center_500"]["end"])) == (0, 350)
     assert (int(first["right_500"]["start"]), int(first["right_500"]["end"])) == (350, 850)
-    assert (
-        int(first["centered_1000"]["start"]),
-        int(first["centered_1000"]["end"]),
-    ) == (0, 600)
-    assert len(bed.read_text().splitlines()) == 7
+    assert len(bed.read_text().splitlines()) == 5
 
 
 def test_window_count_formatter_fills_zero_width_window(tmp_path):
@@ -113,29 +122,6 @@ def test_window_count_formatter_fills_zero_width_window(tmp_path):
     empty = next(row for row in rows if row["window_id"] == "DHS0000001|left_500")
     assert empty["raw_count"] == "0"
     assert empty["width_bp"] == "0"
-
-
-def test_guarded_mixture_accepts_separated_modes_and_rejects_unimodal_values():
-    rng = random.Random(31)
-    bimodal = [rng.gauss(-1.5, 0.18) for _ in range(300)] + [
-        rng.gauss(1.2, 0.22) for _ in range(300)
-    ]
-    supported = fit_guarded_mixture(bimodal)
-    assert supported["mixture_supported"] is True
-    assert supported["delta_bic"] > 10
-    assert supported["ashman_d"] > 2
-    assert supported["low_mean_log10"] < supported["posterior_crossing_log10"]
-    assert supported["posterior_crossing_log10"] < supported["high_mean_log10"]
-
-    unimodal_rng = random.Random(47)
-    rejected = fit_guarded_mixture(
-        [unimodal_rng.gauss(0, 1) for _ in range(1000)]
-    )
-    assert rejected["mixture_supported"] is False
-    posterior, high, component = mixture_assignment(1.0, rejected)
-    assert posterior is not None
-    assert high is not None
-    assert component in {"low", "high"}
 
 
 def test_nearest_tss_classes_use_inclusive_500_and_1000_boundaries():
@@ -258,8 +244,6 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     # the same per-kb context mean as 100 counts in the 500-bp center window.
     first_counts[("DHS0000002", "left_500")] = 40
     second_counts[("DHS0000002", "center_500")] = 100
-    first_counts[("DHS0000002", "centered_1000")] = 60
-    second_counts[("DHS0000002", "centered_1000")] = 140
     for library_id, values in (("h3_1", first_counts), ("h3_2", second_counts)):
         _write_window_count_table(
             count_paths[library_id], definitions, library_id=library_id, counts=values
@@ -306,17 +290,13 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     )
     assert second_signal["h3k27ac_max_500_window"] == "center_500"
     assert second_signal["h3k27ac_max_500_raw_count_sum"] == "100"
-    assert second_signal["h3k27ac_centered_1000_raw_count_sum"] == "200"
+    assert second_signal["h3k27ac_max_500_background_n"] == "1"
     assert float(
-        second_signal["h3k27ac_centered_1000_normalized_cpm"]
-    ) == pytest.approx(100000)
-    assert second_signal["h3k27ac_centered_1000_background_n"] == "1"
-    assert float(
-        second_signal["h3k27ac_centered_1000_background_percentile"]
+        second_signal["h3k27ac_max_500_background_percentile"]
     ) == pytest.approx(1.0)
     assert float(
         second_signal[
-            "h3k27ac_centered_1000_background_upper_tail_probability"
+            "h3k27ac_max_500_background_upper_tail_probability"
         ]
     ) == pytest.approx(0.5)
 
@@ -332,7 +312,6 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         output_catalog=catalog,
         output_wide=wide,
         output_element_paths={"ctx": context_elements},
-        output_mixtures=tmp_path / "mixtures.tsv",
         output_summary=tmp_path / "summary.tsv",
         output_metrics=tmp_path / "metrics.json",
         output_provenance=tmp_path / "provenance.json",
@@ -344,28 +323,24 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         rows = list(reader)
     second = next(row for row in rows if row["master_dhs_id"] == "DHS0000002")
     assert second["h3k27ac_max_500_window"] == "center_500"
-    assert second["mixture_guardrail_warning"] == "1"
-    assert second["mixture_guardrail_failures"] == "insufficient_positive_members"
+    assert second["h3k27ac_active"] == "0"
+    assert second["activity_state"] == "excluded_blacklist"
     assert second["blacklist_overlap"] == "1"
     assert second["blacklist_overlap_bp"] == "50"
     assert float(second["blacklist_overlap_fraction"]) == pytest.approx(50 / 101)
     assert float(second["h3k27ac_left_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
     assert float(second["h3k27ac_center_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
     assert second["h3k27ac_max_500_raw_count_sum"] == "100"
-    assert second["h3k27ac_centered_1000_raw_count_sum"] == "200"
-    assert float(second["h3k27ac_centered_1000_normalized_cpm"]) == pytest.approx(
-        100000
-    )
     assert float(
-        second["h3k27ac_centered_1000_background_percentile"]
+        second["h3k27ac_max_500_background_percentile"]
     ) == pytest.approx(1.0)
     assert float(second["combined_activity_max_500"]) == pytest.approx(
         math.sqrt(9 * 100000)
     )
     with gzip.open(wide, "rt", newline="") as handle:
         wide_reader = csv.DictReader(handle, delimiter="\t")
-        assert "ctx__mixture_guardrail_warning" in wide_reader.fieldnames
-        assert "ctx__mixture_guardrail_failures" in wide_reader.fieldnames
+        assert "ctx__h3k27ac_max_500_background_percentile" in wide_reader.fieldnames
+        assert "ctx__h3k27ac_active" in wide_reader.fieldnames
         assert len(list(wide_reader)) == 2
     with gzip.open(context_elements, "rt", newline="") as handle:
         element_reader = csv.DictReader(handle, delimiter="\t")

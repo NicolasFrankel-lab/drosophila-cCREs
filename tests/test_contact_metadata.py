@@ -46,9 +46,8 @@ def test_default_contact_config_models_exactly_two_contexts(tmp_path):
     ] == ["e13", "hid"]
     assert config["normalization"] == "merge_counts_then_ice_retry_v2"
     assert config["promoter_width_bp"] == 1000
-    assert config["promoter_activity"] == "summit_within_500bp_max_v2"
+    assert config["promoter_activity"] == "summit_within_500bp_catalog_activity_v3"
     assert config["maximum_distance_bp"] == 1_000_000
-    assert config["candidate_element_posterior_threshold"] == 0.5
     assert config["candidate_observed_over_expected_threshold"] == 1.0
     assert len(config["source_manifest_sha256"]) == 64
 

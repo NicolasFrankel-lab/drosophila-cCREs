@@ -16,6 +16,17 @@ def touch_all(paths):
         path.touch()
 
 
+def user_tracks(root):
+    tracks = root.findall("./Panel/Track")
+    assert tracks[0].attrib == {
+        "id": "Reference sequence",
+        "name": "Reference sequence",
+        "clazz": "org.broad.igv.track.SequenceTrack",
+        "visible": "false",
+    }
+    return tracks[1:]
+
+
 def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path):
     atac = tmp_path / "atac"
     catalog = tmp_path / "catalog"
@@ -48,7 +59,7 @@ def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path)
     assert root.attrib["hasGeneTrack"] == "true"
     assert root.attrib["hasSequenceTrack"] == "false"
     resources = root.findall("./Resources/Resource")
-    tracks = root.findall("./Panel/Track")
+    tracks = user_tracks(root)
     assert counts == (2, 11)
     assert len(resources) == len(tracks) == 11
     assert resources[0].attrib["path"] == "atac/master/master_dhs.bed"
@@ -59,12 +70,12 @@ def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path)
         "E11 | pooled ATAC qpois signal",
         "E11 | mean H3K27ac signal (background-TMM)",
         "E11 | context DHSs",
-        "E11 | candidate cCREs (posterior-scored)",
+        "E11 | candidate cCREs (activity-scored)",
         "E5 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "E5 | pooled ATAC qpois signal",
         "E5 | mean H3K27ac signal (background-TMM)",
         "E5 | context DHSs",
-        "E5 | candidate cCREs (posterior-scored)",
+        "E5 | candidate cCREs (activity-scored)",
     ]
 
 
@@ -114,7 +125,7 @@ def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: P
     assert root.attrib["hasGeneTrack"] == "true"
     assert root.attrib["hasSequenceTrack"] == "false"
     resources = root.findall("./Resources/Resource")
-    tracks = root.findall("./Panel/Track")
+    tracks = user_tracks(root)
     assert count == len(resources) == len(tracks) == 5
     assert resources[0].attrib["path"] == "../bed/master_dhs.bed"
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
@@ -123,7 +134,7 @@ def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: P
         "CTX | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX | mean H3K27ac fragment coverage (background-TMM)",
         "CTX | context DHSs (master coordinates)",
-        "CTX | candidate cCREs (posterior-scored)",
+        "CTX | candidate cCREs (activity-scored)",
     ]
 
 
@@ -164,7 +175,7 @@ def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path
     assert root.attrib["hasGeneTrack"] == "true"
     assert root.attrib["hasSequenceTrack"] == "false"
     resources = root.findall("./Resources/Resource")
-    tracks = root.findall("./Panel/Track")
+    tracks = user_tracks(root)
     assert count == len(resources) == len(tracks) == 9
     assert resources[0].attrib["path"] == "bed/master_dhs.bed"
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
@@ -173,11 +184,11 @@ def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path
         "CTX_A | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX_A | mean H3K27ac fragment coverage (background-TMM)",
         "CTX_A | context DHSs (master coordinates)",
-        "CTX_A | candidate cCREs (posterior-scored)",
+        "CTX_A | candidate cCREs (activity-scored)",
         "CTX_B | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX_B | mean H3K27ac fragment coverage (background-TMM)",
         "CTX_B | context DHSs (master coordinates)",
-        "CTX_B | candidate cCREs (posterior-scored)",
+        "CTX_B | candidate cCREs (activity-scored)",
     ]
 
 

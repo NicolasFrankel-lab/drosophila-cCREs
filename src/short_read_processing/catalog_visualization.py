@@ -118,9 +118,9 @@ def _element_bed_content(
             "regulatory_class",
             "nearest_tss_distance_bp",
             "blacklist_overlap",
-            "mixture_component",
-            "mixture_guardrail_warning",
-            "mixture_high_posterior_probability",
+            "h3k27ac_max_500_background_percentile",
+            "h3k27ac_active",
+            "activity_state",
         }
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
             raise ValueError(f"{path}: context-element table lacks required columns")
@@ -148,27 +148,26 @@ def _element_bed_content(
                 if blacklisted
                 else REGULATORY_CLASS_COLORS.get(element_class, "105,105,105")
             )
-            posterior_text = row["mixture_high_posterior_probability"]
-            posterior = float(posterior_text) if posterior_text else None
-            if posterior is not None and (
-                not math.isfinite(posterior) or not 0 <= posterior <= 1
+            percentile_text = row["h3k27ac_max_500_background_percentile"]
+            percentile = float(percentile_text) if percentile_text else None
+            if percentile is not None and (
+                not math.isfinite(percentile) or not 0 <= percentile <= 1
             ):
-                raise ValueError(f"{path}:{line_number}: invalid mixture posterior")
-            warning = row["mixture_guardrail_warning"] == "1"
-            component = row["mixture_component"]
-            if component not in {"low", "high", "not_applicable"}:
-                raise ValueError(f"{path}:{line_number}: invalid mixture component")
+                raise ValueError(f"{path}:{line_number}: invalid background percentile")
+            if row["h3k27ac_active"] not in {"0", "1"}:
+                raise ValueError(f"{path}:{line_number}: invalid H3K27ac activity call")
+            active = row["h3k27ac_active"] == "1"
             distance = row["nearest_tss_distance_bp"] or "NA"
-            posterior_label = "NA" if posterior is None else f"{posterior:.6g}"
-            state = f"{component}_mixture" if component != "not_applicable" else component
-            warning_label = "warning" if warning else "supported"
+            percentile_label = "NA" if percentile is None else f"{percentile:.6g}"
+            state = row["activity_state"]
+            activity_label = "active" if active else "inactive"
             blacklist_label = "blacklist_overlap" if blacklisted else "blacklist_clear"
             name = (
                 f"{master_id}|{element_class}|tss_distance={distance}|"
-                f"posterior_high={posterior_label}|{state}|{warning_label}|"
+                f"max3_background_percentile={percentile_label}|{activity_label}|{state}|"
                 f"{blacklist_label}"
             )
-            score = 0 if posterior is None else round(1000 * posterior)
+            score = 0 if percentile is None else round(1000 * percentile)
             lines.append(
                 f"{element.chrom}\t{element.start}\t{element.end}\t{name}\t"
                 f"{score}\t.\t{element.summit}\t{element.summit + 1}\t{color}\n"
@@ -189,7 +188,7 @@ def build_catalog_beds(
     output_element_beds: dict[str, Path],
     output_manifest: Path,
 ) -> dict[str, Any]:
-    """Write portable master, context-DHS, and posterior-annotated BED tracks."""
+    """Write portable master, context-DHS, and activity-annotated BED tracks."""
 
     contexts = list(element_paths)
     if (
@@ -257,8 +256,8 @@ def build_catalog_beds(
         "schema_version": 2,
         "method": "catalog_igv_bed_tracks_v2",
         "context_dhs_definition": "master DHS coordinates with context_matrix membership=1",
-        "context_element_definition": "all context-member master DHSs; high/low is annotation, not an export filter",
-        "bed_format": "BED9; score is high-component posterior times 1000 and thick interval marks the representative summit",
+        "context_element_definition": "all context-member master DHSs; background-percentile activity is annotation, not an export filter",
+        "bed_format": "BED9; score is max3 background percentile times 1000 and thick interval marks the representative summit",
         "blacklist_item_rgb": "0,0,0",
         "regulatory_class_item_rgb": REGULATORY_CLASS_COLORS,
         "master_dhs_count": len(elements),

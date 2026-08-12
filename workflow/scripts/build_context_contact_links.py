@@ -17,7 +17,6 @@ metrics = build_context_links(
     configured_resolution=int(snakemake.params.resolution),
     maximum_distance=int(snakemake.params.maximum_distance),
     pseudocount_fraction=float(snakemake.params.pseudocount_fraction),
-    posterior_threshold=float(snakemake.params.posterior_threshold),
     observed_contact_path=Path(str(observed[0])) if observed else None,
     nodes_output=Path(str(snakemake.output.nodes)),
     edges_output=Path(str(snakemake.output.edges)),

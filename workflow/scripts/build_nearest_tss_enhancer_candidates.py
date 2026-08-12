@@ -12,9 +12,6 @@ metrics = build_nearest_tss_enhancer_candidates(
     promoters_path=Path(str(snakemake.input.promoters)),
     contexts=list(snakemake.params.contexts),
     enhancer_classes=list(snakemake.params.enhancer_classes),
-    promoter_posterior_threshold=float(
-        snakemake.params.promoter_posterior_threshold
-    ),
     output=Path(str(snakemake.output.candidates)),
     metrics_output=Path(str(snakemake.output.metrics)),
 )

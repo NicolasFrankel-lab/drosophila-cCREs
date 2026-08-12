@@ -43,9 +43,9 @@ def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
         "regulatory_class",
         "nearest_tss_distance_bp",
         "blacklist_overlap",
-        "mixture_component",
-        "mixture_guardrail_warning",
-        "mixture_high_posterior_probability",
+        "h3k27ac_max_500_background_percentile",
+        "h3k27ac_active",
+        "activity_state",
     ]
     with gzip.open(elements, "wt", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
@@ -62,9 +62,9 @@ def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
                 "regulatory_class": "distal_enhancer_like",
                 "nearest_tss_distance_bp": 1250,
                 "blacklist_overlap": 1,
-                "mixture_component": "low",
-                "mixture_guardrail_warning": 1,
-                "mixture_high_posterior_probability": 0.25,
+                "h3k27ac_max_500_background_percentile": 0.25,
+                "h3k27ac_active": 0,
+                "activity_state": "excluded_blacklist",
             }
         )
     output_master = tmp_path / "bed/master_dhs.bed"
@@ -90,7 +90,7 @@ def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
     element_fields = output_elements.read_text().strip().split("\t")
     assert element_fields[3] == (
         "DHS0000001|distal_enhancer_like|tss_distance=1250|"
-        "posterior_high=0.25|low_mixture|warning|blacklist_overlap"
+        "max3_background_percentile=0.25|inactive|excluded_blacklist|blacklist_overlap"
     )
     assert element_fields[4] == "250"
     assert element_fields[8] == "0,0,0"

@@ -27,13 +27,13 @@ from .activity_tmm import (
 
 
 MAX_WINDOW_ORDER = ("center_500", "left_500", "right_500")
-WINDOW_ORDER = (*MAX_WINDOW_ORDER, "centered_1000")
+WINDOW_ORDER = MAX_WINDOW_ORDER
 WINDOW_OFFSETS = {
     "left_500": (-750, -250),
     "center_500": (-250, 250),
     "right_500": (250, 750),
-    "centered_1000": (-500, 500),
 }
+H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD = 0.60
 WINDOW_FIELDS = [
     "window_id",
     "master_dhs_id",
@@ -87,28 +87,9 @@ H3K27AC_QUANTIFICATION_FIELDS = [
     "h3k27ac_max_500_cpm_per_kb",
     "h3k27ac_max_500_normalized_cpm",
     "h3k27ac_max_500_normalized_cpm_per_kb",
-    "h3k27ac_mean_1500_normalized_cpm_per_kb",
-    "h3k27ac_centered_1000_background_n",
-    "h3k27ac_centered_1000_background_percentile",
-    "h3k27ac_centered_1000_background_upper_tail_probability",
-]
-MIXTURE_FIELDS = [
-    "context",
-    "positive_member_n",
-    "mixture_supported",
-    "support_reason",
-    "bic_one_component",
-    "bic_two_component",
-    "delta_bic",
-    "low_mean_log10",
-    "high_mean_log10",
-    "low_sd_log10",
-    "high_sd_log10",
-    "low_weight",
-    "high_weight",
-    "ashman_d",
-    "posterior_crossing_log10",
-    "posterior_crossing_signal",
+    "h3k27ac_max_500_background_n",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_max_500_background_upper_tail_probability",
 ]
 CATALOG_FIELDS = [
     "master_dhs_id",
@@ -145,34 +126,18 @@ CATALOG_FIELDS = [
     "h3k27ac_max_500_cpm_per_kb",
     "h3k27ac_max_500_normalized_cpm_per_kb",
     "h3k27ac_max_500_window",
-    "h3k27ac_mean_1500_normalized_cpm_per_kb",
-    "h3k27ac_centered_1000_width_bp",
-    "h3k27ac_centered_1000_raw_count_sum",
-    "h3k27ac_centered_1000_raw_count_mean",
-    "h3k27ac_centered_1000_cpm",
-    "h3k27ac_centered_1000_cpm_per_kb",
-    "h3k27ac_centered_1000_normalized_cpm",
-    "h3k27ac_centered_1000_normalized_cpm_per_kb",
-    "h3k27ac_centered_1000_background_n",
-    "h3k27ac_centered_1000_background_percentile",
-    "h3k27ac_centered_1000_background_upper_tail_probability",
-    "h3k27ac_log10_z",
-    "h3k27ac_z_tier",
-    "mixture_supported",
-    "mixture_guardrail_warning",
-    "mixture_guardrail_failures",
-    "mixture_high_posterior_probability",
-    "mixture_high_posterior",
-    "mixture_component",
+    "h3k27ac_max_500_background_n",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_max_500_background_upper_tail_probability",
+    "h3k27ac_active",
     "activity_state",
     "combined_activity_max_500",
 ]
 SUMMARY_FIELDS = [
     "context",
     "regulatory_class",
-    "mixture_component",
-    "mixture_supported",
-    "guardrail_failures",
+    "h3k27ac_active",
+    "activity_state",
     "element_n",
 ]
 WIDE_CONTEXT_FIELDS = [
@@ -181,23 +146,12 @@ WIDE_CONTEXT_FIELDS = [
     "h3k27ac_max_500_raw_count_sum",
     "h3k27ac_max_500_normalized_cpm_per_kb",
     "h3k27ac_max_500_window",
-    "h3k27ac_centered_1000_raw_count_sum",
-    "h3k27ac_centered_1000_normalized_cpm",
-    "h3k27ac_centered_1000_background_percentile",
-    "h3k27ac_centered_1000_background_upper_tail_probability",
-    "h3k27ac_log10_z",
-    "mixture_component",
-    "mixture_high_posterior_probability",
-    "mixture_supported",
-    "mixture_guardrail_warning",
-    "mixture_guardrail_failures",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_max_500_background_upper_tail_probability",
+    "h3k27ac_active",
+    "activity_state",
     "combined_activity_max_500",
 ]
-
-MIN_MIXTURE_N = 200
-MIN_DELTA_BIC = 10.0
-MIN_ASHMAN_D = 2.0
-MIN_COMPONENT_WEIGHT = 0.10
 
 
 def _read_chrom_sizes(path: Path) -> tuple[list[str], dict[str, int]]:
@@ -568,10 +522,6 @@ def regulatory_class(distance: int | None) -> str:
     return "distal_enhancer_like"
 
 
-def _normal_log_density(value: float, mean: float, variance: float) -> float:
-    return -0.5 * (math.log(2.0 * math.pi * variance) + (value - mean) ** 2 / variance)
-
-
 def _quantile(values: list[float], probability: float) -> float:
     ordered = sorted(values)
     position = (len(ordered) - 1) * probability
@@ -597,6 +547,17 @@ def _empirical_background_scores(
     percentile = (lower + 0.5 * (upper - lower)) / size
     upper_tail = (size - lower + 1) / (size + 1)
     return percentile, upper_tail
+
+
+def _is_h3k27ac_active(
+    *, member: bool, blacklisted: bool, background_percentile: float | None
+) -> bool:
+    return bool(
+        member
+        and not blacklisted
+        and background_percentile is not None
+        and background_percentile > H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD
+    )
 
 
 def build_h3k27ac_quantification(
@@ -743,18 +704,9 @@ def build_h3k27ac_quantification(
                     -MAX_WINDOW_ORDER.index(window),
                 ),
             )
-            weighted_numerator = sum(
-                windows[window]["normalized_cpm_per_kb"]
-                * windows[window]["width_bp"]
-                for window in eligible
-            )
-            weighted_denominator = sum(
-                windows[window]["width_bp"] for window in eligible
-            )
             quantified[(element.master_id, context)] = {
                 "windows": windows,
                 "winner": winner,
-                "mean_1500": weighted_numerator / weighted_denominator,
                 "library_ids": library_ids,
             }
 
@@ -763,16 +715,12 @@ def build_h3k27ac_quantification(
         background_by_context[context] = sorted(
             float(
                 quantified[(element.master_id, context)]["windows"][
-                    "centered_1000"
-                ]["normalized_cpm"]
+                    quantified[(element.master_id, context)]["winner"]
+                ]["normalized_cpm_per_kb"]
             )
             for element in elements
             if not membership[(element.master_id, context)]
             and not blacklist_by_element[element.master_id]["blacklist_overlap"]
-            and quantified[(element.master_id, context)]["windows"][
-                "centered_1000"
-            ]["normalized_cpm"]
-            is not None
         )
 
     rows = []
@@ -783,9 +731,9 @@ def build_h3k27ac_quantification(
             aggregate = quantified[key]
             windows = aggregate["windows"]
             winner = aggregate["winner"]
-            centered_signal = float(windows["centered_1000"]["normalized_cpm"])
+            max3_signal = float(windows[winner]["normalized_cpm_per_kb"])
             percentile, upper_tail = _empirical_background_scores(
-                centered_signal,
+                max3_signal,
                 background,
             )
             row = {
@@ -802,12 +750,9 @@ def build_h3k27ac_quantification(
                 "h3k27ac_library_n": len(aggregate["library_ids"]),
                 "h3k27ac_library_ids": ";".join(aggregate["library_ids"]),
                 "h3k27ac_max_500_window": winner,
-                "h3k27ac_mean_1500_normalized_cpm_per_kb": aggregate[
-                    "mean_1500"
-                ],
-                "h3k27ac_centered_1000_background_n": len(background),
-                "h3k27ac_centered_1000_background_percentile": percentile,
-                "h3k27ac_centered_1000_background_upper_tail_probability": upper_tail,
+                "h3k27ac_max_500_background_n": len(background),
+                "h3k27ac_max_500_background_percentile": percentile,
+                "h3k27ac_max_500_background_upper_tail_probability": upper_tail,
             }
             for window in WINDOW_ORDER:
                 for field in WINDOW_SIGNAL_VALUE_FIELDS:
@@ -833,7 +778,7 @@ def build_h3k27ac_quantification(
         for context, values in background_by_context.items()
     }
     metrics = {
-        "method": "background_tmm_h3k27ac_summit_windows_v2",
+        "method": "background_tmm_h3k27ac_summit_max3_background_v3",
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "row_count": len(rows),
@@ -842,18 +787,18 @@ def build_h3k27ac_quantification(
             "left_500": "[summit-750,summit-250)",
             "center_500": "[summit-250,summit+250)",
             "right_500": "[summit+250,summit+750)",
-            "centered_1000": "[summit-500,summit+500)",
             "chromosome_boundary_policy": "clip; zero-width windows retain raw zero and blank normalized values",
             "replicate_aggregation": "equal_weight_mean_of_per-library_values",
             "maximum_tie_order": list(MAX_WINDOW_ORDER),
         },
-        "centered_total_definition": (
-            "equal_weight_context_mean of per-library background-TMM normalized CPM "
-            "for fragments overlapping the centered 1000-bp window"
+        "max3_definition": (
+            "maximum equal-weight context-mean background-TMM normalized CPM/kb "
+            "across the left, center, and right 500-bp summit windows"
         ),
         "background_definition": {
             "population": "same-context master DHSs with context_membership=0",
             "blacklist_policy": "exclude master DHSs overlapping the reference blacklist",
+            "signal": "h3k27ac_max_500_normalized_cpm_per_kb",
             "percentile": "midrank empirical CDF",
             "upper_tail_probability": "(1 + count(background >= signal)) / (1 + background_n)",
             "by_context": background_metrics,
@@ -878,7 +823,7 @@ def build_h3k27ac_quantification(
             key: metrics[key]
             for key in (
                 "window_definition",
-                "centered_total_definition",
+                "max3_definition",
                 "background_definition",
             )
         },
@@ -914,7 +859,7 @@ def _read_h3k27ac_quantification(path: Path) -> dict[tuple[str, str], dict[str, 
                 "blacklist_overlap_bp",
                 "context_membership",
                 "h3k27ac_library_n",
-                "h3k27ac_centered_1000_background_n",
+                "h3k27ac_max_500_background_n",
             ):
                 row[field] = int(source[field])
             row["blacklist_overlap_fraction"] = float(
@@ -937,9 +882,8 @@ def _read_h3k27ac_quantification(path: Path) -> dict[tuple[str, str], dict[str, 
                 "h3k27ac_max_500_cpm_per_kb",
                 "h3k27ac_max_500_normalized_cpm",
                 "h3k27ac_max_500_normalized_cpm_per_kb",
-                "h3k27ac_mean_1500_normalized_cpm_per_kb",
-                "h3k27ac_centered_1000_background_percentile",
-                "h3k27ac_centered_1000_background_upper_tail_probability",
+                "h3k27ac_max_500_background_percentile",
+                "h3k27ac_max_500_background_upper_tail_probability",
             ):
                 row[field] = float(source[field]) if source[field] else None
             if source["h3k27ac_max_500_window"] not in MAX_WINDOW_ORDER:
@@ -948,203 +892,6 @@ def _read_h3k27ac_quantification(path: Path) -> dict[tuple[str, str], dict[str, 
     if not rows:
         raise ValueError(f"{path}: H3K27ac quantification table is empty")
     return rows
-
-
-def _fit_two_gaussians(values: list[float]) -> dict[str, float]:
-    n = len(values)
-    overall_variance = statistics.pvariance(values)
-    variance_floor = max(overall_variance * 1e-6, 1e-8)
-    best: dict[str, float] | None = None
-    for lower_probability, upper_probability in ((0.2, 0.8), (0.25, 0.75), (1 / 3, 2 / 3)):
-        means = [_quantile(values, lower_probability), _quantile(values, upper_probability)]
-        variances = [max(overall_variance, variance_floor)] * 2
-        weights = [0.5, 0.5]
-        previous = -math.inf
-        for _iteration in range(500):
-            sums = [0.0, 0.0]
-            weighted_values = [0.0, 0.0]
-            weighted_squares = [0.0, 0.0]
-            log_likelihood = 0.0
-            for value in values:
-                logs = [
-                    math.log(weights[index])
-                    + _normal_log_density(value, means[index], variances[index])
-                    for index in (0, 1)
-                ]
-                maximum = max(logs)
-                denominator = math.exp(logs[0] - maximum) + math.exp(logs[1] - maximum)
-                log_likelihood += maximum + math.log(denominator)
-                responsibilities = [
-                    math.exp(logs[index] - maximum) / denominator for index in (0, 1)
-                ]
-                for index in (0, 1):
-                    weight = responsibilities[index]
-                    sums[index] += weight
-                    weighted_values[index] += weight * value
-                    weighted_squares[index] += weight * value * value
-            for index in (0, 1):
-                if sums[index] <= 1e-8:
-                    break
-                means[index] = weighted_values[index] / sums[index]
-                variances[index] = max(
-                    weighted_squares[index] / sums[index] - means[index] ** 2,
-                    variance_floor,
-                )
-                weights[index] = sums[index] / n
-            else:
-                if math.isfinite(previous) and log_likelihood - previous <= 1e-10 * (
-                    1.0 + abs(log_likelihood)
-                ):
-                    break
-                previous = log_likelihood
-                continue
-            break
-        order = sorted((0, 1), key=lambda index: means[index])
-        candidate = {
-            "log_likelihood": log_likelihood,
-            "low_mean": means[order[0]],
-            "high_mean": means[order[1]],
-            "low_variance": variances[order[0]],
-            "high_variance": variances[order[1]],
-            "low_weight": weights[order[0]],
-            "high_weight": weights[order[1]],
-        }
-        if best is None or candidate["log_likelihood"] > best["log_likelihood"]:
-            best = candidate
-    assert best is not None
-    return best
-
-
-def _posterior_high(value: float, fit: dict[str, float]) -> float:
-    low = math.log(fit["low_weight"]) + _normal_log_density(
-        value, fit["low_mean"], fit["low_variance"]
-    )
-    high = math.log(fit["high_weight"]) + _normal_log_density(
-        value, fit["high_mean"], fit["high_variance"]
-    )
-    maximum = max(low, high)
-    return math.exp(high - maximum) / (
-        math.exp(low - maximum) + math.exp(high - maximum)
-    )
-
-
-def _posterior_crossing(fit: dict[str, float]) -> float | None:
-    lower, upper = fit["low_mean"], fit["high_mean"]
-    if not lower < upper:
-        return None
-    grid = [lower + (upper - lower) * index / 1000 for index in range(1001)]
-    signed = [_posterior_high(value, fit) - 0.5 for value in grid]
-    brackets = []
-    for index in range(1000):
-        if signed[index] == 0:
-            brackets.append((grid[index], grid[index]))
-        elif signed[index] * signed[index + 1] < 0:
-            brackets.append((grid[index], grid[index + 1]))
-    if signed[-1] == 0:
-        brackets.append((grid[-1], grid[-1]))
-    if len(brackets) != 1:
-        return None
-    left, right = brackets[0]
-    for _iteration in range(80):
-        middle = (left + right) / 2
-        if _posterior_high(middle, fit) >= 0.5:
-            right = middle
-        else:
-            left = middle
-    return (left + right) / 2
-
-
-def fit_guarded_mixture(values: list[float]) -> dict[str, Any]:
-    """Fit a deterministic 1D Gaussian mixture and apply bimodality guards."""
-
-    values = [value for value in values if math.isfinite(value)]
-    n = len(values)
-    empty = {
-        "positive_member_n": n,
-        "mixture_supported": False,
-        "support_reason": "insufficient_positive_members",
-        "bic_one_component": None,
-        "bic_two_component": None,
-        "delta_bic": None,
-        "low_mean_log10": None,
-        "high_mean_log10": None,
-        "low_sd_log10": None,
-        "high_sd_log10": None,
-        "low_weight": None,
-        "high_weight": None,
-        "ashman_d": None,
-        "posterior_crossing_log10": None,
-        "posterior_crossing_signal": None,
-        "_fit": None,
-    }
-    if n < MIN_MIXTURE_N:
-        return empty
-    variance = statistics.pvariance(values)
-    if variance <= 1e-12:
-        return {**empty, "support_reason": "zero_variance"}
-    mean = statistics.fmean(values)
-    log_likelihood_one = sum(_normal_log_density(value, mean, variance) for value in values)
-    fit = _fit_two_gaussians(values)
-    bic_one = 2 * math.log(n) - 2 * log_likelihood_one
-    bic_two = 5 * math.log(n) - 2 * fit["log_likelihood"]
-    delta_bic = bic_one - bic_two
-    ashman_d = math.sqrt(2.0) * (fit["high_mean"] - fit["low_mean"]) / math.sqrt(
-        fit["low_variance"] + fit["high_variance"]
-    )
-    crossing = _posterior_crossing(fit)
-    reasons = []
-    if delta_bic < MIN_DELTA_BIC:
-        reasons.append("delta_bic_below_10")
-    if ashman_d < MIN_ASHMAN_D:
-        reasons.append("ashman_d_below_2")
-    if min(fit["low_weight"], fit["high_weight"]) < MIN_COMPONENT_WEIGHT:
-        reasons.append("minor_component_below_0.10")
-    if crossing is None:
-        reasons.append("no_unique_posterior_crossing_between_means")
-    supported = not reasons
-    return {
-        "positive_member_n": n,
-        "mixture_supported": supported,
-        "support_reason": "supported" if supported else ";".join(reasons),
-        "bic_one_component": bic_one,
-        "bic_two_component": bic_two,
-        "delta_bic": delta_bic,
-        "low_mean_log10": fit["low_mean"],
-        "high_mean_log10": fit["high_mean"],
-        "low_sd_log10": math.sqrt(fit["low_variance"]),
-        "high_sd_log10": math.sqrt(fit["high_variance"]),
-        "low_weight": fit["low_weight"],
-        "high_weight": fit["high_weight"],
-        "ashman_d": ashman_d,
-        "posterior_crossing_log10": crossing,
-        "posterior_crossing_signal": 10**crossing if crossing is not None else None,
-        "_fit": fit,
-    }
-
-
-def mixture_assignment(
-    signal: float,
-    mixture: dict[str, Any],
-) -> tuple[float | None, bool | None, str]:
-    """Assign a positive signal even when fitted components fail a guardrail."""
-
-    fit = mixture.get("_fit")
-    if signal <= 0 or fit is None:
-        return None, None, "not_applicable"
-    posterior = _posterior_high(math.log10(signal), fit)
-    high = posterior >= 0.5
-    return posterior, high, "high" if high else "low"
-
-
-def _format_nullable_rows(fields: list[str], rows: list[dict[str, Any]]) -> str:
-    cleaned = [
-        {
-            field: "" if row.get(field) is None else row.get(field, "")
-            for field in fields
-        }
-        for row in rows
-    ]
-    return _tsv_content(fields, cleaned)
 
 
 def build_regulatory_catalog(
@@ -1160,12 +907,11 @@ def build_regulatory_catalog(
     output_catalog: Path,
     output_wide: Path,
     output_element_paths: dict[str, Path],
-    output_mixtures: Path,
     output_summary: Path,
     output_metrics: Path,
     output_provenance: Path,
 ) -> dict[str, Any]:
-    """Fit guarded mixtures to quantified H3K27ac and write the catalog."""
+    """Call max3 background-percentile activity and write the catalog."""
 
     if not contexts or len(contexts) != len(set(contexts)):
         raise ValueError("Contexts must be non-empty and unique")
@@ -1230,51 +976,22 @@ def build_regulatory_catalog(
                     "h3k27ac_max_500_normalized_cpm_per_kb"
                 ],
                 "winner": source["h3k27ac_max_500_window"],
-                "mean_value": source[
-                    "h3k27ac_mean_1500_normalized_cpm_per_kb"
-                ],
                 "library_n": source["h3k27ac_library_n"],
                 "library_ids": source["h3k27ac_library_ids"],
                 "background_n": source[
-                    "h3k27ac_centered_1000_background_n"
+                    "h3k27ac_max_500_background_n"
                 ],
                 "background_percentile": source[
-                    "h3k27ac_centered_1000_background_percentile"
+                    "h3k27ac_max_500_background_percentile"
                 ],
                 "background_upper_tail_probability": source[
-                    "h3k27ac_centered_1000_background_upper_tail_probability"
+                    "h3k27ac_max_500_background_upper_tail_probability"
                 ],
             }
 
-    z_by_key: dict[tuple[str, str], float | None] = {}
-    mixtures: dict[str, dict[str, Any]] = {}
-    for context in contexts:
-        positive = [
-            aggregated[(element.master_id, context)]["max_value"]
-            for element in elements
-            if aggregated[(element.master_id, context)]["max_value"] > 0
-        ]
-        logs = [math.log10(value) for value in positive]
-        mean = statistics.fmean(logs) if logs else 0.0
-        sd = statistics.pstdev(logs) if len(logs) > 1 else 0.0
-        for element in elements:
-            key = (element.master_id, context)
-            signal = aggregated[key]["max_value"]
-            z_by_key[key] = (
-                (math.log10(signal) - mean) / sd if signal > 0 and sd > 0 else None
-            )
-        member_logs = [
-            math.log10(aggregated[(element.master_id, context)]["max_value"])
-            for element in elements
-            if membership[(element.master_id, context)]
-            and aggregated[(element.master_id, context)]["max_value"] > 0
-        ]
-        mixtures[context] = fit_guarded_mixture(member_logs)
-
-    summary_counts: dict[tuple[str, str, str, int, str], int] = {}
+    summary_counts: dict[tuple[str, str, int, str], int] = {}
 
     def catalog_row(context: str, element) -> dict[str, Any]:
-        mixture = mixtures[context]
         key = (element.master_id, context)
         aggregate = aggregated[key]
         activity = activity_rows[key]
@@ -1288,33 +1005,22 @@ def build_regulatory_catalog(
         member = membership[key]
         distance, tss_ids = nearest_tss(element.chrom, element.summit, tss)
         element_class = regulatory_class(distance)
-        z_score = z_by_key[key]
-        if aggregate["max_value"] <= 0:
-            z_tier = "no_h3k27ac_signal"
-        elif z_score is not None and z_score > 1.64:
-            z_tier = "high_z_gt_1.64"
-        elif z_score is not None and z_score > 1.0:
-            z_tier = "moderate_z_gt_1"
-        else:
-            z_tier = "lower_z_le_1"
-        posterior: float | None = None
-        high_posterior: bool | None = None
-        component = "not_applicable"
-        if member:
-            posterior, high_posterior, component = mixture_assignment(
-                aggregate["max_value"], mixture
-            )
+        blacklisted = bool(blacklist_by_element[element.master_id]["blacklist_overlap"])
+        active = _is_h3k27ac_active(
+            member=bool(member),
+            blacklisted=blacklisted,
+            background_percentile=aggregate["background_percentile"],
+        )
         if not member:
             state = "inactive_in_context"
-        elif component == "high":
-            state = "active_high_mixture"
-        elif component == "low":
-            state = "low_h3k27ac_mixture"
+        elif blacklisted:
+            state = "excluded_blacklist"
+        elif active:
+            state = "active_h3k27ac_background_gt_0.60"
         elif aggregate["max_value"] <= 0:
             state = "accessible_no_h3k27ac_signal"
         else:
-            state = "mixture_unavailable"
-        failures = "" if mixture["mixture_supported"] else mixture["support_reason"]
+            state = "below_h3k27ac_background_threshold"
         windows = aggregate["windows"]
         atac = float(activity["atac_normalized_cpm_per_kb"])
         combined = math.sqrt(atac * aggregate["max_value"])
@@ -1345,43 +1051,14 @@ def build_regulatory_catalog(
             ],
             "h3k27ac_max_500_normalized_cpm_per_kb": aggregate["max_value"],
             "h3k27ac_max_500_window": aggregate["winner"],
-            "h3k27ac_mean_1500_normalized_cpm_per_kb": aggregate["mean_value"],
-            "h3k27ac_centered_1000_width_bp": windows["centered_1000"][
-                "width_bp"
-            ],
-            "h3k27ac_centered_1000_raw_count_sum": windows["centered_1000"][
-                "raw_count_sum"
-            ],
-            "h3k27ac_centered_1000_raw_count_mean": windows["centered_1000"][
-                "raw_count_mean"
-            ],
-            "h3k27ac_centered_1000_cpm": windows["centered_1000"]["cpm"],
-            "h3k27ac_centered_1000_cpm_per_kb": windows["centered_1000"][
-                "cpm_per_kb"
-            ],
-            "h3k27ac_centered_1000_normalized_cpm": windows[
-                "centered_1000"
-            ]["normalized_cpm"],
-            "h3k27ac_centered_1000_normalized_cpm_per_kb": windows[
-                "centered_1000"
-            ]["normalized_cpm_per_kb"],
-            "h3k27ac_centered_1000_background_n": aggregate["background_n"],
-            "h3k27ac_centered_1000_background_percentile": aggregate[
+            "h3k27ac_max_500_background_n": aggregate["background_n"],
+            "h3k27ac_max_500_background_percentile": aggregate[
                 "background_percentile"
             ],
-            "h3k27ac_centered_1000_background_upper_tail_probability": aggregate[
+            "h3k27ac_max_500_background_upper_tail_probability": aggregate[
                 "background_upper_tail_probability"
             ],
-            "h3k27ac_log10_z": z_score,
-            "h3k27ac_z_tier": z_tier,
-            "mixture_supported": int(mixture["mixture_supported"]),
-            "mixture_guardrail_warning": int(not mixture["mixture_supported"]),
-            "mixture_guardrail_failures": failures,
-            "mixture_high_posterior_probability": posterior,
-            "mixture_high_posterior": (
-                None if high_posterior is None else int(high_posterior)
-            ),
-            "mixture_component": component,
+            "h3k27ac_active": int(active),
             "activity_state": state,
             "combined_activity_max_500": combined,
         }
@@ -1402,9 +1079,8 @@ def build_regulatory_catalog(
                 summary_key = (
                     context,
                     row["regulatory_class"],
-                    row["mixture_component"],
-                    row["mixture_supported"],
-                    row["mixture_guardrail_failures"],
+                    row["h3k27ac_active"],
+                    row["activity_state"],
                 )
                 summary_counts[summary_key] = summary_counts.get(summary_key, 0) + 1
                 yield row
@@ -1456,41 +1132,26 @@ def build_regulatory_catalog(
             ),
         )
 
-    mixture_rows = []
-    for context in contexts:
-        row = {
-            "context": context,
-            **{
-                field: mixtures[context].get(field)
-                for field in MIXTURE_FIELDS[1:]
-            },
-        }
-        row["mixture_supported"] = int(row["mixture_supported"])
-        mixture_rows.append(row)
     summary_rows = [
         {
             "context": context,
             "regulatory_class": element_class,
-            "mixture_component": component,
-            "mixture_supported": supported,
-            "guardrail_failures": failures,
+            "h3k27ac_active": active,
+            "activity_state": state,
             "element_n": count,
         }
         for (
             context,
             element_class,
-            component,
-            supported,
-            failures,
+            active,
+            state,
         ), count in sorted(summary_counts.items())
     ]
-    mixture_content = _format_nullable_rows(MIXTURE_FIELDS, mixture_rows)
-    _atomic_text_if_changed(output_mixtures, mixture_content)
     summary_content = _tsv_content(SUMMARY_FIELDS, summary_rows)
     _atomic_text_if_changed(output_summary, summary_content)
 
     metrics = {
-        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v4",
+        "method": "background_tmm_summit_max3_nonmember_percentile_v5",
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "catalog_row_count": len(elements) * len(contexts),
@@ -1499,32 +1160,22 @@ def build_regulatory_catalog(
             "left_500": "[summit-750,summit-250)",
             "center_500": "[summit-250,summit+250)",
             "right_500": "[summit+250,summit+750)",
-            "centered_1000": "[summit-500,summit+500)",
             "chromosome_boundary_policy": "clip; zero-width windows retained with blank normalized values",
             "replicate_aggregation": "read from quantification-stage equal-weight context means",
             "maximum_tie_order": list(MAX_WINDOW_ORDER),
         },
-        "z_score_definition": "population_z_of_positive_log10_context_mean_max3_across_full_master_set",
-        "mixture_definition": {
-            "fit_population": "positive_context_member_master_dhs",
-            "model": "deterministic_two_gaussian_em_on_log10_signal",
-            "minimum_n": MIN_MIXTURE_N,
-            "minimum_delta_bic": MIN_DELTA_BIC,
-            "minimum_ashman_d": MIN_ASHMAN_D,
-            "minimum_component_weight": MIN_COMPONENT_WEIGHT,
-            "posterior_threshold": 0.5,
-            "assignment_policy": (
-                "assign_low_or_high_when_a_two-component_fit_exists; "
-                "retain assignments with explicit guardrail warnings when unsupported"
+        "activity_definition": {
+            "signal": "h3k27ac_max_500_normalized_cpm_per_kb",
+            "background_population": (
+                "same-context context-nonmember master DHSs excluding "
+                "blacklist-overlapping elements"
             ),
-            "context_results": {
-                context: {
-                    field: value
-                    for field, value in mixtures[context].items()
-                    if field != "_fit"
-                }
-                for context in contexts
-            },
+            "percentile": "midrank empirical CDF",
+            "threshold": H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD,
+            "comparison": "strictly_greater_than",
+            "call_population": (
+                "context-member master DHSs excluding blacklist-overlapping elements"
+            ),
         },
         "regulatory_class_definition": {
             "coordinate": "absolute master_summit_to_nearest_tss_distance_bp",
@@ -1538,7 +1189,7 @@ def build_regulatory_catalog(
             "blacklist_overlap": "1 when at least one master-DHS base overlaps the reference blacklist",
             "blacklist_overlap_bp": "unioned number of overlapping bases",
             "blacklist_overlap_fraction": "blacklist_overlap_bp divided by master-DHS width",
-            "filtering_policy": "annotate_only",
+            "filtering_policy": "retain and annotate all rows; blacklist overlaps cannot be active",
         },
         "catalog_sha256": sha256_file(output_catalog),
         "wide_catalog_sha256": sha256_file(output_wide),
@@ -1558,11 +1209,10 @@ def build_regulatory_catalog(
                 for (
                     summary_context,
                     _element_class,
-                    component,
-                    _supported,
-                    _failures,
+                    active,
+                    _state,
                 ), count in summary_counts.items()
-                if summary_context == context and component == "high"
+                if summary_context == context and active
             )
             for context in contexts
         },
@@ -1585,8 +1235,7 @@ def build_regulatory_catalog(
             key: metrics[key]
             for key in (
                 "window_definition",
-                "z_score_definition",
-                "mixture_definition",
+                "activity_definition",
                 "regulatory_class_definition",
                 "blacklist_annotation_definition",
             )
@@ -1601,7 +1250,6 @@ def build_regulatory_catalog(
                 }
                 for context, path in sorted(output_element_paths.items())
             },
-            "mixtures": {"path": str(output_mixtures.resolve()), "sha256": sha256_file(output_mixtures)},
             "summary": {"path": str(output_summary.resolve()), "sha256": sha256_file(output_summary)},
         },
     }

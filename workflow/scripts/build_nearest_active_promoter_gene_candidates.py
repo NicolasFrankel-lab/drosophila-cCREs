@@ -10,9 +10,6 @@ from short_read_processing.contact_links import (
 metrics = build_nearest_active_promoter_gene_candidates(
     context=str(snakemake.wildcards.context),
     nodes_path=Path(str(snakemake.input.nodes)),
-    element_posterior_threshold=float(
-        snakemake.params.element_posterior_threshold
-    ),
     output=Path(str(snakemake.output.candidates)),
     metrics_output=Path(str(snakemake.output.metrics)),
 )

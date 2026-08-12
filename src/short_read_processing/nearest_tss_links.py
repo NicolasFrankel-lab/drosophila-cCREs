@@ -42,7 +42,8 @@ BASE_FIELDS = (
 CONTEXT_FIELDS = (
     "element_context_membership",
     "element_atac_signal",
-    "element_h3k27ac_posterior",
+    "element_h3k27ac_background_percentile",
+    "element_h3k27ac_active",
     "element_activity_state",
     "element_combined_activity",
     "nearest_promoter_active",
@@ -50,7 +51,7 @@ CONTEXT_FIELDS = (
     "active_nearest_promoter_supporting_element_ids",
     "nearest_promoter_activity_score_max",
     "nearest_promoter_atac_signal_max",
-    "nearest_promoter_h3k27ac_posterior_max",
+    "nearest_promoter_h3k27ac_background_percentile_max",
     "nearest_promoter_combined_activity_max",
 )
 
@@ -64,7 +65,8 @@ CATALOG_STORED_FIELDS = (
     "context_membership",
     "regulatory_class",
     "atac_normalized_cpm_per_kb",
-    "mixture_high_posterior_probability",
+    "h3k27ac_max_500_background_percentile",
+    "h3k27ac_active",
     "activity_state",
     "combined_activity_max_500",
 )
@@ -177,7 +179,6 @@ def build_nearest_tss_enhancer_candidates(
     promoters_path: Path,
     contexts: list[str],
     enhancer_classes: list[str],
-    promoter_posterior_threshold: float,
     output: Path,
     metrics_output: Path,
 ) -> dict[str, Any]:
@@ -185,8 +186,6 @@ def build_nearest_tss_enhancer_candidates(
 
     if not contexts or len(contexts) != len(set(contexts)):
         raise ValueError("Contexts must be non-empty and unique")
-    if not 0 <= promoter_posterior_threshold <= 1:
-        raise ValueError("Promoter posterior threshold must be in [0, 1]")
     if not enhancer_classes or len(enhancer_classes) != len(set(enhancer_classes)):
         raise ValueError("Enhancer classes must be non-empty and unique")
 
@@ -197,7 +196,6 @@ def build_nearest_tss_enhancer_candidates(
         context: promoter_activities(
             promoters,
             read_context_elements(catalog_path, context)[0],
-            promoter_posterior_threshold,
         )
         for context in contexts
     }
@@ -254,10 +252,10 @@ def build_nearest_tss_enhancer_candidates(
                     if master
                 }
             )
-            posterior_values = [
-                activity.h3k27ac_posterior
+            percentile_values = [
+                activity.h3k27ac_background_percentile
                 for _promoter, activity in nearest_activities
-                if activity.h3k27ac_posterior is not None
+                if activity.h3k27ac_background_percentile is not None
             ]
             prefix = f"{context}__"
             context_values.update(
@@ -268,9 +266,10 @@ def build_nearest_tss_enhancer_candidates(
                     f"{prefix}element_atac_signal": element[
                         "atac_normalized_cpm_per_kb"
                     ],
-                    f"{prefix}element_h3k27ac_posterior": element[
-                        "mixture_high_posterior_probability"
+                    f"{prefix}element_h3k27ac_background_percentile": element[
+                        "h3k27ac_max_500_background_percentile"
                     ],
+                    f"{prefix}element_h3k27ac_active": element["h3k27ac_active"],
                     f"{prefix}element_activity_state": element["activity_state"],
                     f"{prefix}element_combined_activity": element[
                         "combined_activity_max_500"
@@ -302,8 +301,8 @@ def build_nearest_tss_enhancer_candidates(
                         if nearest_activities
                         else None
                     ),
-                    f"{prefix}nearest_promoter_h3k27ac_posterior_max": _format(
-                        max(posterior_values) if posterior_values else None
+                    f"{prefix}nearest_promoter_h3k27ac_background_percentile_max": _format(
+                        max(percentile_values) if percentile_values else None
                     ),
                     f"{prefix}nearest_promoter_combined_activity_max": _format(
                         max(
@@ -360,10 +359,9 @@ def build_nearest_tss_enhancer_candidates(
         "promoters_sha256": sha256_file(promoters_path),
         "contexts": contexts,
         "enhancer_classes": enhancer_classes,
-        "promoter_posterior_threshold": promoter_posterior_threshold,
         "promoter_activity_definition": (
             "any context-member master DHS summit within inclusive +/-500 bp of "
-            "the exact annotated TSS, with maximum H3K27ac posterior meeting threshold"
+            "the exact annotated TSS with catalog H3K27ac activity"
         ),
         "candidate_assignment": (
             "minimum absolute enhancer-summit to annotated-TSS distance; all exact "

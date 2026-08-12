@@ -12,10 +12,11 @@ The production path has three phases separated by an explicit manual QC gate:
 1. process reads through library QC and export `pending_review` BAM manifests;
 2. review every library, then construct the master DHS set from accepted ATAC
    libraries only;
-3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, fit the
-   guarded H3K27ac mixtures, write posterior- and blacklist-annotated catalogs,
-   then build the default nearest-TSS candidate table; optionally normalize
-   the reviewed contact maps and build contact-supported links.
+3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, assign
+   each max3 H3K27ac signal an empirical nonmember-DHS background percentile,
+   call activity above 0.60, then build the default nearest-TSS candidate
+   table; optionally normalize the reviewed contact maps and build
+   contact-supported links.
 
 There is no external regulatory-element reference or quantile-normalization
 branch. Strict reuse of a checksummed master-DHS bundle is supported.
@@ -147,8 +148,8 @@ two biological ATAC libraries per context.
 | `alignment` | quality-filtered, blacklist-retaining final BAM/BAI, alignment QC, final-BAM manifest |
 | `qc` | peaks, FRiP and assay QC, MultiQC |
 | `master` | replicate-supported context peaks and master DHS bundle/manifest |
-| `quantification` | raw, CPM/kb, background-TMM factors, exact-DHS signals, summit max3/centered-1-kb H3K27ac signals, and nonmember-background ranks |
-| `catalog` | guarded H3K27ac mixtures, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
+| `quantification` | raw, CPM/kb, background-TMM factors, exact-DHS signals, summit max3 H3K27ac signals, and nonmember-background percentiles |
+| `catalog` | max3 background-percentile activity calls, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
 | `links` | default one-row-per-enhancer nearest-TSS table and promoter activity annotations; optional normalized contacts, decay model, context edges, and contact-ranked genes with `--with-contacts` |
 | `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the links |
 
@@ -403,7 +404,7 @@ The `links` stage always builds the contact-independent table
 `activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.tsv.gz`.
 It has exactly one row per catalog element classified
 `proximal_enhancer_like` or `distal_enhancer_like`; it does not require the
-enhancer itself to pass an H3K27ac-posterior filter. The candidate is the
+enhancer itself to pass the catalog H3K27ac activity call. The candidate is the
 annotated TSS with minimum absolute distance from the master-DHS summit on the
 same chromosome. All exact distance ties are retained in semicolon-aligned
 fields in that same enhancer row rather than creating duplicate enhancer rows.
@@ -411,14 +412,14 @@ fields in that same enhancer row rather than creating duplicate enhancer rows.
 Static columns report the enhancer coordinates/class, nearest promoter IDs,
 gene IDs/names, TSS positions/strands, transcript IDs, distance, and tie count.
 For every catalog context, `CONTEXT__...` columns report the enhancer's
-membership, ATAC signal, H3K27ac posterior, activity state, and combined
+membership, ATAC signal, H3K27ac max3 background percentile, activity state, and combined
 activity. They also report whether any tied nearest promoter is active, which
 tied promoter IDs are active, their supporting master-DHS IDs, and maximum
 promoter activity measurements. The summary columns list all contexts in
 which a tied nearest promoter is active. Here “active promoter” means that a
 context-member master-DHS summit is within inclusive ±500 bp of the exact TSS
-and the maximum H3K27ac high-component posterior among such DHSs is at least
-0.5. Promoter activity annotates the distance-selected target; it does not
+and at least one such DHS has the catalog activity call. Promoter activity
+annotates the distance-selected target; it does not
 change which TSS is nearest.
 
 The supporting promoter registry and metrics are written beside the table:
@@ -502,8 +503,7 @@ The current dm6 GTF supplies one promoter node per distinct gene/TSS, using a
 fixed 1,000-bp promoter window (plus/minus 500 bp around the TSS). In each
 context, promoter activity is summarized from context-member master DHSs whose
 summits are at most 500 bp from that TSS. A promoter is marked active when
-it is ATAC-accessible and its maximum H3K27ac high-component posterior is at
-least 0.5. Every context-member element is linked to promoters on the same
+at least one supporting DHS has the catalog activity call. Every context-member element is linked to promoters on the same
 chromosome within 1 Mb. Observed contexts report the ICE-balanced matrix pixel,
 the fitted distance expectation, and observed/expected enrichment. Same-bin
 pairs use the maximum adjacent-bin contact and are labeled
@@ -516,7 +516,7 @@ distance, including valid zero pixels and excluding masked bins. This avoids
 inflating the model by conditioning only on nonzero contacts.
 
 The promoter activity score is the maximum of
-`combined_activity × H3K27ac_posterior` over individual promoter-supporting
+`combined_activity × H3K27ac_background_percentile` over individual blacklist-clear promoter-supporting
 DHSs; the two maxima are not taken from different DHSs and multiplied. The edge score is
 `contact_weight × promoter_activity_score`.
 It is a prioritization score, not a calibrated probability or causal claim.
@@ -526,8 +526,7 @@ compare the sources of evidence rather than accepting one fixed target call.
 The additional
 `<context>.active_contact_enhancer_gene_candidates.tsv.gz` table is a focused
 projection for observed-contact contexts. It first retains proximal or distal
-enhancer-like DHSs whose element H3K27ac high-component posterior is at least
-0.5, then retains promoter edges whose observed/expected contact is at least
+enhancer-like DHSs with the catalog H3K27ac activity call, then retains promoter edges whose observed/expected contact is at least
 1, and only then collapses alternative promoters to genes and recomputes the
 within-enhancer ranks. Promoter activity columns are preserved but are not an
 additional selection criterion. The table is header-only for `e13` and `hid`
@@ -540,7 +539,7 @@ exhaustive graph.
 Within the optional contact branch, every context also receives the narrower,
 per-context supplementary table
 `<context>.nearest_active_promoter_gene_candidates.tsv.gz`, a
-contact-independent nearest-active-TSS comparison for the same posterior-qualified
+contact-independent nearest-active-TSS comparison for the same catalog-active
 proximal/distal enhancer-like DHSs. It selects the closest active annotated
 promoter TSS on the same chromosome without a distance cutoff and retains all
 exact distance ties. The output identifies every active master DHS supporting
@@ -550,12 +549,12 @@ supporting DHS has that class because both definitions use the same inclusive
 500-bp summit distance. The subset is retained as an audit field and can differ
 only for an imported catalog carrying historical class labels. This table uses
 neither observed contacts nor the power-law model. Unlike the default wide
-table, it filters enhancers at posterior 0.5, chooses among active promoters,
+table, it filters enhancers by the catalog activity call, chooses among active promoters,
 and can contain multiple rows per enhancer when promoter/TSS ties occur.
 
 The two distance-only contexts additionally produce
 `<context>.active_distance_enhancer_gene_candidates.tsv.gz`. This table keeps
-the same enhancer posterior threshold, requires the target promoter to be
+the same enhancer catalog-activity requirement, requires the target promoter to be
 active in that context, and ranks the retained genes by the existing
 `power-law contact weight × promoter activity score`. `is_primary_candidate`
 marks rank 1. Repeated baseline columns report the closest active promoter TSS
@@ -590,8 +589,7 @@ replicate SD, and `sqrt(ATAC × H3K27ac)` values.
 ## H3K27ac summit signal and nonmember background
 
 During quantification, H3K27ac is counted for every master DHS in every context
-in four clipped summit-centered windows. The first three are non-overlapping
-500-bp windows:
+in three clipped, non-overlapping 500-bp summit windows:
 
 ```text
 left:   [summit-750, summit-250)
@@ -599,55 +597,37 @@ center: [summit-250, summit+250)
 right:  [summit+250, summit+750)
 ```
 
-The fourth measurement is an overlapping total-signal window:
-
-```text
-centered total: [summit-500, summit+500)
-```
-
 The strict DHS-by-context table retains every window's raw count sum and mean,
 CPM, CPM/kb, background-TMM normalized CPM, and normalized CPM/kb. Per-library
 raw window counts are also retained. Replicates are averaged with equal weight
 within context before selecting the maximum normalized density among the three
-500-bp windows. The max3 raw signal is the raw count for that normalized-signal
-winning window. The centered 1-kb primary measurement is normalized CPM, which
-represents total normalized fragments overlapping the interval rather than a
-per-base density.
+500-bp windows. The max3 raw signal and other max3 fields come from that
+normalized-density winning window; ties resolve center, then left, then right.
 
 For each context, `context_membership=0` master DHSs that do not overlap the
 reference blacklist form the empirical H3K27ac background. Every DHS receives
 a midrank percentile and a conservative upper-tail probability
-`(1 + count(background >= signal)) / (1 + background_n)` from the centered
-1-kb normalized signal. The table reports the background size, and metrics
+`(1 + count(background >= signal)) / (1 + background_n)` from the max3
+background-TMM normalized CPM/kb signal. Zero-signal background DHSs are
+included. The table reports the background size, and metrics
 report its zero fraction and q50/q60/q70/q80/q90/q95/q99 values. Quantification
 does not impose an activity cutoff.
 
-## Guarded H3K27ac mixtures
+## H3K27ac activity call
 
-The catalog stage consumes the frozen quantification table. The two-Gaussian
-model is fitted to positive `log10(max-window H3K27ac)` values among DHSs open
-in that context; it does not recount BAMs or reapply TMM factors.
+The catalog stage consumes the frozen quantification table and does not recount
+BAMs or reapply TMM factors. A DHS is active in a context only when it is a
+context member, does not overlap the reference blacklist, and its max3
+background percentile is strictly greater than 0.60. Rows at exactly 0.60 are
+inactive. Every DHS/context row is retained with the continuous percentile,
+upper-tail probability, raw and normalized max3 signals, `h3k27ac_active`, and
+an explicit `activity_state`.
 
-A fit is marked supported only if all guards pass:
-
-- at least 200 positive member DHSs;
-- `BIC(one Gaussian) - BIC(two Gaussians) >= 10`;
-- Ashman's D is at least 2;
-- both component weights are at least 0.10;
-- exactly one posterior-0.5 crossing lies between the component means;
-- the fitted population has nonzero variance.
-
-Whenever a two-component fit exists, every positive member DHS is assigned to
-`low` or `high` using posterior probability 0.5, even if a guard fails. Such
-rows are retained with `mixture_supported=0`,
-`mixture_guardrail_warning=1`, and the exact semicolon-separated failures in
-`mixture_guardrail_failures`. No unsupported call is silently promoted to a
-supported one.
-
-This summit-window quantification is activity schema version 4 with method
-`summit_windows_background_tmm_v2`. Start it in a new `run_id`; older catalog
-bundles remain importable for links-only analysis but are not silently
-reinterpreted with the new measurements.
+This definition is activity schema version 5 with method
+`summit_max3_background_tmm_v3`. It replaces the centered 1-kb measurement and
+guarded Gaussian-mixture model. Rebuild quantification and catalog outputs in a
+new scientific run namespace when migrating an older run; older catalog
+bundles are not silently reinterpreted.
 
 ## Regulatory classes
 
@@ -668,17 +648,17 @@ with the current plus/minus-500-bp window. Promoter support is selected directly
 by the inclusive absolute summit-to-TSS distance, not by overlap between the
 original DHS interval and the promoter BED interval.
 
-For positive H3K27ac signal at a context-member DHS,
-`mixture_high_posterior_probability` is the fitted probability of membership
-in the high component. `mixture_component` and `mixture_high_posterior` are
-derived at 0.5 for summaries, but they do not filter the catalog or the
-per-context element exports. Zero-signal members have a blank posterior and
-`activity_state=accessible_no_h3k27ac_signal`.
+`h3k27ac_max_500_background_percentile` is the midrank empirical percentile of
+the element's max3 signal against blacklist-clear DHSs that do not contribute
+to that context. `h3k27ac_active` is one only for blacklist-clear context
+members strictly above 0.60. Zero-signal members remain in the catalog with
+`activity_state=accessible_no_h3k27ac_signal` when they do not pass that cutoff.
 
 The long and wide tables also retain the absolute summit-to-nearest-TSS
-distance and the blacklist overlap annotations. Users can therefore choose a
-posterior threshold, a TSS-distance definition, and a blacklist-overlap policy
-for each downstream analysis rather than accepting a fixed enhancer list.
+distance and the blacklist overlap annotations. The continuous percentile
+allows downstream analyses to apply more stringent cutoffs without recounting
+the BAMs, while the production activity call remains fixed at greater than
+0.60.
 
 When the links stage imports a legacy catalog that predates
 `blacklist_overlap`, it preserves that catalog and assigns a dummy value of
@@ -686,18 +666,19 @@ zero to the link-layer element records. Each context metrics file records this
 as `blacklist_overlap_annotation=legacy_catalog_default_zero`; this value means
 unknown/not annotated, not evidence that the element was checked and cleared.
 
-For example, this writes context-member, distal candidates with posterior at
-least 0.9 and no blacklist overlap while discovering columns from the header:
+For example, this writes context-member, distal candidates with a max3
+background percentile of at least 0.9 and no blacklist overlap while
+discovering columns from the header:
 
 ```bash
 gzip -dc results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz |
 awk -F '\t' 'BEGIN {OFS=FS}
 NR==1 {for (i=1; i<=NF; i++) column[$i]=i; print; next}
 $(column["context_membership"]) == 1 &&
-$(column["mixture_high_posterior_probability"]) != "" &&
-$(column["mixture_high_posterior_probability"]) >= 0.9 &&
+$(column["h3k27ac_max_500_background_percentile"]) != "" &&
+$(column["h3k27ac_max_500_background_percentile"]) >= 0.9 &&
 $(column["nearest_tss_distance_bp"]) > 1000 &&
-$(column["blacklist_overlap"]) == 0' > distal.posterior-0.9.tsv
+$(column["blacklist_overlap"]) == 0' > distal.max3-background-0.9.tsv
 ```
 
 ## Browser tracks and IGV sessions
@@ -708,10 +689,10 @@ context. The context DHS BED uses the master-DHS coordinates for rows with
 with the catalog rather than reproducing the wider upstream pooled-peak
 boundaries. The context-element BED retains every member. It is BED9: the
 thick one-base interval marks the representative summit, the score is the
-high-component posterior scaled to 0--1,000 (zero when the posterior is not
-applicable), and item RGB distinguishes the TSS-distance classes. Blacklist
-overlaps are black. The name records the exact TSS distance, posterior,
-mixture component, guardrail status, and blacklist-overlap status.
+max3 background percentile scaled to 0--1,000 (zero when the percentile is not
+available), and item RGB distinguishes the TSS-distance classes. Blacklist
+overlaps are black. The name records the exact TSS distance, percentile,
+activity call/state, and blacklist-overlap status.
 
 For each assay and context, every accepted library is first scaled by
 `1e6 / effective_library_size` using the same assay-specific background-TMM
@@ -728,7 +709,7 @@ run's semantic digest.
 
 Opening `activity/catalog/igv/<context>.xml` loads five relative, portable
 resources: the global master-DHS registry first, followed by the mean ATAC
-150-bp pileup, mean H3K27ac, context DHSs, and posterior-scored candidate
+150-bp pileup, mean H3K27ac, context DHSs, and activity-scored candidate
 elements. With the genome gene track enabled, the master registry is the first
 custom track immediately below the gene/GTF annotation. Opening
 `activity/catalog/all-contexts.igv.xml` loads the master registry once plus
@@ -750,7 +731,7 @@ python src/build_igv_session.py results/<project>/<master-run>/atac \
 The master registry is the first custom track immediately below IGV's
 gene/GTF annotation. It is followed, for each context, by the background-TMM
 mean 150-bp ATAC Tn5 pileup, pooled ATAC qpois signal, background-TMM mean
-H3K27ac fragment coverage, context DHSs, and posterior-scored candidate cCREs.
+H3K27ac fragment coverage, context DHSs, and activity-scored candidate cCREs.
 The raw pooled MACS3 ATAC pileup is deliberately omitted because it is
 unscaled and depth-dependent; it remains an auditable master-calling output.
 Replicate H3K27ac signal, H3K27ac peaks, and intermediate ATAC candidates are
@@ -795,9 +776,7 @@ Catalog:
 results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz
 results/<project>/<run_id>/activity/catalog/master_elements_wide.tsv.gz
 results/<project>/<run_id>/activity/catalog/elements/<context>.elements.tsv.gz
-results/<project>/<run_id>/activity/catalog/mixture_models.tsv
 results/<project>/<run_id>/activity/catalog/regulatory_element_summary.tsv
-results/<project>/<run_id>/activity/catalog/h3k27ac_mixture_distributions.svg
 results/<project>/<run_id>/activity/catalog/regulatory_element_metrics.json
 results/<project>/<run_id>/activity/catalog/regulatory_element_provenance.json
 results/<project>/<run_id>/activity/catalog/bed/master_dhs.bed
@@ -852,17 +831,18 @@ results/<project>/<run_id>/activity/report/integrated_qc_report.json
 
 The report includes frozen input and output inventories with checksums, BAM QC
 and FRiP statistics, H3K27ac cross-correlation, ATAC TSS plots, master-registry
-statistics, TMM factors, high-component TSS classes, mixture fits, exact
-guardrail warnings, nearest-TSS candidate/promoter-activity coverage, and—when
+statistics, TMM factors, max3 background-percentile activity by TSS class,
+nearest-TSS candidate/promoter-activity coverage, and—when
 enabled—contact-link coverage by context. The JSON sidecar
 records every report input and output hash.
 
-The long table contains one master-element/context row and reports both mixture
-components, continuous posterior, TSS distance, and blacklist overlap. The
-wide table contains one row per master element with context-prefixed
-membership, signal, mixture, warning, and activity columns plus the shared TSS
-and blacklist annotations. Each per-context element file contains every
-context member, including low-component and zero-signal rows. The BED and
+The long table contains one master-element/context row and reports raw and
+normalized max3 signal, continuous background percentile, activity call/state,
+TSS distance, and blacklist overlap. The wide table contains one row per master
+element with context-prefixed membership, signal, percentile, and activity
+columns plus the shared TSS and blacklist annotations. Each per-context element
+file contains every context member, including below-threshold and zero-signal
+rows. The BED and
 mean-signal sidecars are also explicit report inputs, so their paths and
 checksums appear in the integrated audit trail.
 

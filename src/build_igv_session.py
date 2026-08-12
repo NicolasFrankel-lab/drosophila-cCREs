@@ -40,6 +40,19 @@ def add_track(
     )
 
 
+def add_hidden_sequence_order_anchor(panel: ET.Element) -> None:
+    """Reserve IGV's zero order so the master BED stays below genome tracks."""
+
+    ET.SubElement(
+        panel,
+        "Track",
+        id="Reference sequence",
+        name="Reference sequence",
+        clazz="org.broad.igv.track.SequenceTrack",
+        visible="false",
+    )
+
+
 def _require(paths: list[Path]) -> None:
     missing = [path for path in paths if not path.is_file()]
     if missing:
@@ -111,6 +124,7 @@ def build_session(
     )
     resources = ET.SubElement(session, "Resources")
     panel = ET.SubElement(session, "Panel", name="Context regulatory atlas")
+    add_hidden_sequence_order_anchor(panel)
     if master_bed is None:
         master_bed = atac_root / "master" / "master_dhs.bed"
     _require([master_bed])
@@ -154,7 +168,7 @@ def build_session(
                 True,
             ),
             (inputs[3], f"{label} | context DHSs", "0,145,130", False),
-            (inputs[4], f"{label} | candidate cCREs (posterior-scored)", "202,61,52", False),
+            (inputs[4], f"{label} | candidate cCREs (activity-scored)", "202,61,52", False),
         )
         for path, name, color, signal in specifications:
             add_track(
@@ -204,6 +218,7 @@ def build_catalog_session(
     )
     resources = ET.SubElement(session, "Resources")
     panel = ET.SubElement(session, "Panel", name=f"{context} regulatory atlas")
+    add_hidden_sequence_order_anchor(panel)
     label = context.upper()
     specifications = [
         (
@@ -232,7 +247,7 @@ def build_catalog_session(
         ),
         (
             elements_bed,
-            f"{label} | candidate cCREs (posterior-scored)",
+            f"{label} | candidate cCREs (activity-scored)",
             "202,61,52",
             False,
         ),
@@ -271,7 +286,7 @@ def build_all_contexts_catalog_session(
         "ATAC BigWigs": atac_bigwigs,
         "H3K27ac BigWigs": h3k27ac_bigwigs,
         "context DHS BEDs": context_dhs_beds,
-        "posterior-annotated element BEDs": element_beds,
+        "activity-annotated element BEDs": element_beds,
     }
     expected = set(contexts)
     for label, paths in mappings.items():
@@ -294,6 +309,7 @@ def build_all_contexts_catalog_session(
     )
     resources = ET.SubElement(session, "Resources")
     panel = ET.SubElement(session, "Panel", name="All-context regulatory atlas")
+    add_hidden_sequence_order_anchor(panel)
     add_track(
         resources,
         panel,
@@ -327,7 +343,7 @@ def build_all_contexts_catalog_session(
             ),
             (
                 element_beds[context],
-                f"{label} | candidate cCREs (posterior-scored)",
+                f"{label} | candidate cCREs (activity-scored)",
                 "202,61,52",
                 False,
             ),
@@ -346,6 +362,7 @@ def build_all_contexts_catalog_session(
     return track_count
 
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("atac_root", type=Path, help="Run's results/.../atac directory")
@@ -361,7 +378,7 @@ def main() -> int:
         "--catalog-bed-root",
         type=Path,
         required=True,
-        help="activity/catalog/bed directory with all context and posterior-annotated BEDs",
+        help="activity/catalog/bed directory with all context and activity-annotated BEDs",
     )
     parser.add_argument(
         "--catalog-track-root",

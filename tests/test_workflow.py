@@ -135,15 +135,15 @@ def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
                     }
                 )
     config["activity"] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "master": master,
         "contexts": list(contexts),
         "libraries": libraries,
         "atac_fragment_maximum": 150,
         "atac_browser_extension_bp": 150,
         "normalization": "background_tmm_10kb_autosomes_v1",
-        "h3k27ac_signal": "summit_windows_background_tmm_v2",
-        "mixture_model": "guarded_two_gaussian_log10_v1",
+        "h3k27ac_signal": "summit_max3_background_tmm_v3",
+        "h3k27ac_activity_percentile_threshold": 0.60,
     }
     config["report"] = {
         "schema_version": 1,
@@ -161,17 +161,16 @@ def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
     nearest_annotation.parent.mkdir(exist_ok=True)
     nearest_annotation.write_bytes(b"annotation")
     config["nearest_tss_links"] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "promoter_annotation": str(nearest_annotation),
         "promoter_annotation_checksum": "sha256:" + "e" * 64,
         "chromosome_scope": "all_annotation_chromosomes_in_chrom_sizes",
         "promoter_width_bp": 1000,
-        "promoter_posterior_threshold": 0.5,
         "enhancer_classes": [
             "proximal_enhancer_like",
             "distal_enhancer_like",
         ],
-        "promoter_activity": "summit_within_500bp_max_v2",
+        "promoter_activity": "summit_within_500bp_catalog_activity_v3",
         "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
     }
     return config
@@ -648,7 +647,6 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "count_activity_h3k27ac_windows",
         "build_activity_h3k27ac_signal",
         "build_regulatory_element_catalog",
-        "plot_regulatory_element_mixtures",
         "build_catalog_bed_tracks",
         "build_context_mean_bigwig",
         "build_context_igv_session",
@@ -662,8 +660,6 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "master_elements_long.tsv.gz",
         "master_elements_wide.tsv.gz",
         "ctx.elements.tsv.gz",
-        "mixture_models.tsv",
-        "h3k27ac_mixture_distributions.svg",
         "ctx.elements.bed",
         "ctx.atac.mean.background_tmm.bw",
         "ctx.h3k27ac.mean.background_tmm.bw",
@@ -741,7 +737,6 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     assert "download_contact_" not in report_output
     assert "build_integrated_qc_report" in report_output
     assert "integrated_qc_report.pdf" in report_output
-
     config["output_stage"] = "quantification"
     quantification_output = _dry_run(tmp_path, config, "quantification-only")
     assert "build_activity_tmm_table" in quantification_output
@@ -751,6 +746,16 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     assert "master_dhs_activity.tsv.gz" in quantification_output
     assert "h3k27ac/master_dhs_signal.tsv.gz" in quantification_output
     assert "build_regulatory_element_catalog" not in quantification_output
+
+
+def test_activity_config_rejects_changed_h3k27ac_activity_threshold(tmp_path):
+    config = _activity_config(tmp_path)
+    config["activity"]["h3k27ac_activity_percentile_threshold"] = 0.7
+
+    with pytest.raises(
+        AcquisitionError, match="H3K27ac activity percentile threshold must be 0.60"
+    ):
+        validate_workflow_config(config)
 
 
 def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
@@ -770,7 +775,7 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         encoding="utf-8",
     )
     config["contacts"] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_manifest": str(manifest),
         "source_manifest_sha256": sha256_file(manifest),
         "promoter_annotation": str(annotation),
@@ -779,12 +784,10 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         "promoter_width_bp": 1000,
         "maximum_distance_bp": 1_000_000,
         "pseudocount_fraction": 0.01,
-        "promoter_posterior_threshold": 0.5,
-        "candidate_element_posterior_threshold": 0.5,
         "candidate_observed_over_expected_threshold": 1.0,
         "normalization": "merge_counts_then_ice_retry_v2",
-        "promoter_activity": "summit_within_500bp_max_v2",
-        "link_score": "contact_weight_x_promoter_activity_posterior_v2",
+        "promoter_activity": "summit_within_500bp_catalog_activity_v3",
+        "link_score": "contact_weight_x_promoter_activity_percentile_v3",
         "contexts": [
             {
                 "id": "observed",
@@ -836,20 +839,6 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         assert expected in output
     assert "observed.active_distance_enhancer_gene_candidates.tsv.gz" not in output
     assert "build_integrated_qc_report" not in output
-
-    legacy_config = copy.deepcopy(config)
-    legacy_config["contacts"].pop("candidate_element_posterior_threshold")
-    legacy_config["contacts"].pop(
-        "candidate_observed_over_expected_threshold"
-    )
-    validate_workflow_config(legacy_config)
-
-    invalid_posterior = copy.deepcopy(config)
-    invalid_posterior["contacts"]["candidate_element_posterior_threshold"] = 1.1
-    with pytest.raises(
-        AcquisitionError, match="Candidate element posterior threshold"
-    ):
-        validate_workflow_config(invalid_posterior)
 
     invalid_enrichment = copy.deepcopy(config)
     invalid_enrichment["contacts"][

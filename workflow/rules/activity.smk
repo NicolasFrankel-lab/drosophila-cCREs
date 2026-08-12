@@ -461,7 +461,6 @@ if ACTIVITY:
             catalog=ACTIVITY_REGULATORY_CATALOG,
             wide=ACTIVITY_REGULATORY_WIDE,
             elements=list(ACTIVITY_REGULATORY_ELEMENTS.values()),
-            mixtures=ACTIVITY_REGULATORY_MIXTURES,
             summary=ACTIVITY_REGULATORY_SUMMARY,
             metrics=ACTIVITY_REGULATORY_METRICS,
             provenance=ACTIVITY_REGULATORY_PROVENANCE
@@ -476,25 +475,6 @@ if ACTIVITY:
             f"{RESULT_ROOT}/logs/activity/catalog/catalog.log"
         script:
             "../scripts/build_regulatory_element_catalog.py"
-
-
-    rule plot_regulatory_element_mixtures:
-        input:
-            catalog=ACTIVITY_REGULATORY_CATALOG,
-            mixtures=ACTIVITY_REGULATORY_MIXTURES,
-            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_mixture_plot.py")
-        output:
-            svg=ACTIVITY_REGULATORY_MIXTURE_PLOT,
-            bins=ACTIVITY_REGULATORY_MIXTURE_BINS,
-            metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS
-        resources:
-            mem_mb=3000
-        conda:
-            "../envs/reporting.yaml"
-        log:
-            f"{RESULT_ROOT}/logs/activity/catalog/mixture-plot.log"
-        script:
-            "../scripts/plot_regulatory_element_mixtures.py"
 
 
     rule build_catalog_bed_tracks:
@@ -657,13 +637,9 @@ if ACTIVITY:
             catalog=ACTIVITY_REGULATORY_CATALOG,
             wide=ACTIVITY_REGULATORY_WIDE,
             elements=list(ACTIVITY_REGULATORY_ELEMENTS.values()),
-            mixtures=ACTIVITY_REGULATORY_MIXTURES,
             summary=ACTIVITY_REGULATORY_SUMMARY,
             catalog_metrics=ACTIVITY_REGULATORY_METRICS,
             catalog_provenance=ACTIVITY_REGULATORY_PROVENANCE,
-            mixture_plot=ACTIVITY_REGULATORY_MIXTURE_PLOT,
-            mixture_bins=ACTIVITY_REGULATORY_MIXTURE_BINS,
-            mixture_plot_metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
             catalog_master_bed=ACTIVITY_CATALOG_MASTER_BED,
             context_dhs_beds=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
             element_beds=list(ACTIVITY_CATALOG_ELEMENT_BEDS.values()),
@@ -695,13 +671,9 @@ if ACTIVITY:
                 "master_dhs_activity": ACTIVITY_TABLE,
                 "master_elements_long": ACTIVITY_REGULATORY_CATALOG,
                 "master_elements_wide": ACTIVITY_REGULATORY_WIDE,
-                "mixture_models": ACTIVITY_REGULATORY_MIXTURES,
                 "regulatory_element_summary": ACTIVITY_REGULATORY_SUMMARY,
                 "regulatory_element_metrics": ACTIVITY_REGULATORY_METRICS,
                 "regulatory_element_provenance": ACTIVITY_REGULATORY_PROVENANCE,
-                "mixture_distributions": ACTIVITY_REGULATORY_MIXTURE_PLOT,
-                "mixture_distribution_bins": ACTIVITY_REGULATORY_MIXTURE_BINS,
-                "mixture_distribution_metrics": ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
                 "catalog_master_dhs_bed": ACTIVITY_CATALOG_MASTER_BED,
                 "catalog_bed_manifest": ACTIVITY_CATALOG_BED_MANIFEST,
                 **{

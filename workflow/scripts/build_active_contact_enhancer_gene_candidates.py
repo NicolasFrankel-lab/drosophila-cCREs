@@ -11,9 +11,6 @@ metrics = build_active_contact_enhancer_gene_candidates(
     context=str(snakemake.wildcards.context),
     nodes_path=Path(str(snakemake.input.nodes)),
     edges_path=Path(str(snakemake.input.edges)),
-    element_posterior_threshold=float(
-        snakemake.params.element_posterior_threshold
-    ),
     observed_over_expected_threshold=float(
         snakemake.params.observed_over_expected_threshold
     ),

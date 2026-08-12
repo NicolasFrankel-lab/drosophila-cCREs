@@ -171,7 +171,6 @@ if CONTACTS:
             ),
             maximum_distance=int(CONTACTS["maximum_distance_bp"]),
             pseudocount_fraction=float(CONTACTS["pseudocount_fraction"]),
-            posterior_threshold=float(CONTACTS["promoter_posterior_threshold"])
         wildcard_constraints:
             context=wildcard_regex(CONTACT_CONTEXTS)
         threads: 1
@@ -193,9 +192,6 @@ if CONTACTS:
             candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_contact_enhancer_gene_candidates.tsv.gz",
             metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_contact_enhancer_gene_candidates.metrics.json"
         params:
-            element_posterior_threshold=float(
-                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
-            ),
             observed_over_expected_threshold=float(
                 CONTACTS.get("candidate_observed_over_expected_threshold", 1.0)
             )
@@ -218,10 +214,6 @@ if CONTACTS:
         output:
             candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nearest_active_promoter_gene_candidates.tsv.gz",
             metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nearest_active_promoter_gene_candidates.metrics.json"
-        params:
-            element_posterior_threshold=float(
-                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
-            )
         wildcard_constraints:
             context=wildcard_regex(CONTACT_CONTEXTS)
         threads: 1
@@ -242,10 +234,6 @@ if CONTACTS:
         output:
             candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_distance_enhancer_gene_candidates.tsv.gz",
             metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_distance_enhancer_gene_candidates.metrics.json"
-        params:
-            element_posterior_threshold=float(
-                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
-            )
         wildcard_constraints:
             context=wildcard_regex(CONTACT_POWERLAW_CONTEXTS)
         threads: 1

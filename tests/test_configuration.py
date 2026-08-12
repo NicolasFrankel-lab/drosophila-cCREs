@@ -908,11 +908,12 @@ def test_activity_config_requires_complete_accepted_contexts(tmp_path):
         "final_bam_manifest",
     }
     assert config["samples"] == []
-    assert config["activity"]["schema_version"] == 4
+    assert config["activity"]["schema_version"] == 5
     assert (
         config["activity"]["h3k27ac_signal"]
-        == "summit_windows_background_tmm_v2"
+        == "summit_max3_background_tmm_v3"
     )
+    assert config["activity"]["h3k27ac_activity_percentile_threshold"] == 0.60
     assert config["activity"]["contexts"] == ["eye"]
     assert config["activity"]["atac_browser_extension_bp"] == 150
     assert config["activity"]["normalization"] == "background_tmm_10kb_autosomes_v1"
