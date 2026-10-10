@@ -106,3 +106,33 @@ def test_review_manifest_accepts_rich_pass_fail_review_table(tmp_path, monkeypat
     row = read_final_bam_manifest(output)["h3"]
     assert row["qc_status"] == "accepted"
     assert row["estimated_fragment_length_bp"] == "165"
+
+
+def test_review_manifest_selects_one_assay_from_atlas_decision_table(
+    tmp_path, monkeypatch
+):
+    source = _source_manifest(tmp_path)
+    decisions = tmp_path / "decisions.tsv"
+    decisions.write_text(
+        "library_id\tassay\tcontext\tqc_decision\testimated_fragment_length_bp\tnotes\n"
+        "atac_rep1\tatac\teye\tpass\t\t\n"
+        "h3\th3k27ac\teye\tpass\t170\t\n"
+    )
+    output = tmp_path / "reviewed.tsv"
+    arguments = [
+        "review_final_bam_manifest.py",
+        str(source),
+        "--review-table",
+        str(decisions),
+        "--output",
+        str(output),
+    ]
+    monkeypatch.setattr(sys, "argv", arguments)
+    with pytest.raises(AcquisitionError, match="unknown libraries: atac_rep1"):
+        main()
+
+    monkeypatch.setattr(sys, "argv", [*arguments, "--assay", "h3k27ac"])
+    assert main() == 0
+    row = read_final_bam_manifest(output)["h3"]
+    assert row["qc_status"] == "accepted"
+    assert row["estimated_fragment_length_bp"] == "170"

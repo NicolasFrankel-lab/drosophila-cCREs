@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,6 @@ from .artifacts import (
     sha256_file,
 )
 from .stage_checkpoints import LOGICAL_STAGES
-from .contact_metadata import read_contact_source_manifest
 
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -99,29 +99,6 @@ CATALOG_IMPORT_FIELDS = {
     "source_sample_sheet_sha256",
     *CATALOG_FILE_FIELDS,
     *(f"{field}_sha256" for field in CATALOG_FILE_FIELDS),
-}
-CONTACT_FIELDS = {
-    "schema_version",
-    "source_manifest",
-    "source_manifest_sha256",
-    "promoter_annotation",
-    "promoter_annotation_checksum",
-    "canonical_chromosomes",
-    "promoter_width_bp",
-    "maximum_distance_bp",
-    "pseudocount_fraction",
-    "normalization",
-    "promoter_activity",
-    "link_score",
-    "contexts",
-}
-CONTACT_CONTEXT_FIELDS = {
-    "id",
-    "strategy",
-    "assay",
-    "match",
-    "resolution_bp",
-    "caveat",
 }
 NEAREST_TSS_LINK_FIELDS = {
     "schema_version",
@@ -282,7 +259,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     for field in ("project", "run_id"):
         if not SAFE_ID_RE.fullmatch(str(config[field])):
             raise AcquisitionError(f"Invalid {field}: {config[field]!r}")
-    if config["assay"] not in {"atac", "chip_tf", "chip_histone", "activity"}:
+    if config["assay"] not in {"atac", "chip_histone", "activity"}:
         raise AcquisitionError(f"Unsupported assay: {config['assay']!r}")
     if not isinstance(config["reference"], dict):
         raise AcquisitionError("reference must be a mapping")
@@ -393,7 +370,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity master {field} is not a SHA-256 digest"
                 )
-        if activity["schema_version"] != 5:
+        if activity["schema_version"] != 6:
             raise AcquisitionError("Unsupported activity schema version")
         if int(activity["atac_fragment_maximum"]) < 2:
             raise AcquisitionError("Activity ATAC fragment maximum is invalid")
@@ -403,9 +380,15 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Unsupported activity normalization method")
         if activity["h3k27ac_signal"] != "summit_max3_background_tmm_v3":
             raise AcquisitionError("Unsupported regulatory-element method")
-        if float(activity["h3k27ac_activity_percentile_threshold"]) != 0.60:
+        threshold = activity["h3k27ac_activity_percentile_threshold"]
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(float(threshold))
+            or not 0 < float(threshold) < 1
+        ):
             raise AcquisitionError(
-                "H3K27ac activity percentile threshold must be 0.60"
+                "H3K27ac activity percentile threshold must be in (0, 1)"
             )
         contexts = activity["contexts"]
         if (
@@ -651,126 +634,11 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             "nearest_tss_links requires an activity catalog/links configuration"
         )
 
-    contacts = config.get("contacts")
-    if contacts is not None:
-        if input_stage not in {"quantification", "catalog"} or config["assay"] != "activity":
-            raise AcquisitionError(
-                "Contact links require an activity configuration"
-            )
-        if not isinstance(contacts, dict):
-            raise AcquisitionError("contacts must be a mapping")
-        _required(contacts, CONTACT_FIELDS, "Contacts")
-        if contacts["schema_version"] != 2:
-            raise AcquisitionError("Unsupported contacts schema version")
-        if config["reference"]["name"] != "dm6":
-            raise AcquisitionError("The configured contact atlas is dm6-only")
-        if not re.fullmatch(
-            r"[0-9a-f]{64}", str(contacts["source_manifest_sha256"])
-        ):
-            raise AcquisitionError("Contact source-manifest SHA-256 is invalid")
-        if not CHECKSUM_RE.fullmatch(str(contacts["promoter_annotation_checksum"])):
-            raise AcquisitionError("Contact promoter-annotation checksum is invalid")
-        if not contacts["source_manifest"] or not contacts["promoter_annotation"]:
-            raise AcquisitionError("Contact input paths cannot be blank")
-        canonical = contacts["canonical_chromosomes"]
-        if (
-            not isinstance(canonical, list)
-            or not canonical
-            or len(canonical) != len(set(canonical))
-            or any(not str(chromosome).startswith("chr") for chromosome in canonical)
-        ):
-            raise AcquisitionError("Contact canonical chromosomes are invalid")
-        if int(contacts["promoter_width_bp"]) != 1000:
-            raise AcquisitionError(
-                "Contact promoter width must be 1000 bp (plus/minus 500 bp)"
-            )
-        if int(contacts["maximum_distance_bp"]) < 1:
-            raise AcquisitionError("Contact maximum distance must be positive")
-        if not 0 <= float(contacts["pseudocount_fraction"]) <= 1:
-            raise AcquisitionError("Contact pseudocount fraction must be in [0, 1]")
-        if float(
-            contacts.get("candidate_observed_over_expected_threshold", 1.0)
-        ) < 0:
-            raise AcquisitionError(
-                "Candidate observed/expected threshold cannot be negative"
-            )
-        expected_methods = {
-            "normalization": "merge_counts_then_ice_retry_v2",
-            "promoter_activity": "summit_within_500bp_catalog_activity_v3",
-            "link_score": "contact_weight_x_promoter_activity_percentile_v3",
-        }
-        for field, expected in expected_methods.items():
-            if contacts[field] != expected:
-                raise AcquisitionError(
-                    f"Unsupported contact {field}: {contacts[field]!r}"
-                )
-        context_rows = contacts["contexts"]
-        if not isinstance(context_rows, list) or not context_rows:
-            raise AcquisitionError("Contact contexts must be a non-empty list")
-        context_ids = []
-        observed_contexts = set()
-        for row in context_rows:
-            if not isinstance(row, dict):
-                raise AcquisitionError("Contact context records must be mappings")
-            _required(row, CONTACT_CONTEXT_FIELDS, "Contact context")
-            context_id = str(row["id"])
-            if not SAFE_ID_RE.fullmatch(context_id) or context_id in context_ids:
-                raise AcquisitionError("Contact context IDs must be safe and unique")
-            context_ids.append(context_id)
-            strategy = row["strategy"]
-            if strategy not in {"observed", "powerlaw"}:
-                raise AcquisitionError(
-                    f"Contact context {context_id!r} has invalid strategy"
-                )
-            if int(row["resolution_bp"]) < 1 or not row["match"]:
-                raise AcquisitionError(
-                    f"Contact context {context_id!r} has invalid metadata"
-                )
-            if strategy == "observed":
-                if row["assay"] not in {"Micro-C", "Hi-C"}:
-                    raise AcquisitionError(
-                        f"Observed context {context_id!r} has invalid assay"
-                    )
-                observed_contexts.add(context_id)
-            else:
-                if row["assay"] != "distance_model":
-                    raise AcquisitionError(
-                        f"Power-law context {context_id!r} must use distance_model"
-                    )
-        expected_contexts = (
-            activity["contexts"]
-            if input_stage == "quantification"
-            else catalog_import["contexts"]
+    if "contacts" in config:
+        raise AcquisitionError(
+            "The contact-link branch is not part of this workflow; remove the "
+            "contacts mapping"
         )
-        if set(context_ids) != set(expected_contexts):
-            raise AcquisitionError(
-                "Contact contexts must exactly match activity contexts"
-            )
-        if not observed_contexts:
-            raise AcquisitionError("A power-law model requires observed contact contexts")
-        manifest = Path(str(contacts["source_manifest"]))
-        if manifest.is_file():
-            if sha256_file(manifest) != contacts["source_manifest_sha256"]:
-                raise AcquisitionError("Contact source-manifest SHA-256 mismatch")
-            source_rows = read_contact_source_manifest(manifest)
-            source_contexts = {row["context"] for row in source_rows}
-            if source_contexts != observed_contexts:
-                raise AcquisitionError(
-                    "Contact sources must cover exactly the observed contexts"
-                )
-            configured_by_context = {
-                str(row["id"]): row for row in context_rows
-            }
-            for source in source_rows:
-                configured = configured_by_context[source["context"]]
-                if (
-                    source["assay"] != configured["assay"]
-                    or source["match_quality"] != configured["match"]
-                ):
-                    raise AcquisitionError(
-                        f"Contact source metadata differs from configured context "
-                        f"{source['context']!r}"
-                    )
     qpois = config.get("atac_qpois")
     if (
         config["assay"] == "atac"
@@ -859,7 +727,6 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         raise AcquisitionError("Every sample must have a safe non-empty id")
     if len(sample_ids) != len(set(sample_ids)):
         raise AcquisitionError("Sample IDs must be unique")
-    role_by_id = {str(sample["id"]): sample.get("role") for sample in samples}
     context_by_id = {str(sample["id"]): str(sample.get("context", "")) for sample in samples}
 
     for sample in samples:
@@ -872,8 +739,10 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         _required(sample, sample_fields, f"Sample {sample_id}")
         if not SAFE_ID_RE.fullmatch(str(sample["context"])):
             raise AcquisitionError(f"Sample {sample_id}: invalid context")
-        if sample["role"] not in {"treatment", "control"}:
-            raise AcquisitionError(f"Sample {sample_id}: invalid role")
+        if sample["role"] != "treatment":
+            raise AcquisitionError(
+                f"Sample {sample_id}: only IP/treatment libraries are supported"
+            )
         if sample["layout"] not in {"single", "paired"}:
             raise AcquisitionError(f"Sample {sample_id}: invalid layout")
         if input_stage == "accessions":
@@ -953,9 +822,13 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                     raise AcquisitionError(
                         f"Sample {sample_id}: invalid two-ended Tn5 qpois configuration"
                     )
+            elif not peak["broad"]:
+                raise AcquisitionError(
+                    f"Sample {sample_id}: H3K27ac callpeak must use broad mode"
+                )
             elif not peak["write_bedgraph"] or not peak["spmr"]:
                 raise AcquisitionError(
-                    f"Sample {sample_id}: ChIP callpeak must write -B --SPMR bedGraphs"
+                    f"Sample {sample_id}: H3K27ac callpeak must write -B --SPMR bedGraphs"
                 )
             qc_peak = sample.get("qc_peak")
             if qc_peak is not None:
@@ -981,16 +854,10 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                         f"Sample {sample_id}: QC peak SHA-256 is invalid"
                     )
 
-        if config["assay"].startswith("chip") and sample["role"] == "treatment":
-            control = str(sample.get("control") or "")
-            if control and role_by_id.get(control) != "control":
-                raise AcquisitionError(f"Sample {sample_id}: invalid matched ChIP control")
-            if control and context_by_id[control] != str(sample["context"]):
-                raise AcquisitionError(
-                    f"Sample {sample_id}: treatment and control contexts differ"
-                )
-        if config["assay"] == "atac" and sample["role"] != "treatment":
-            raise AcquisitionError("ATAC configurations cannot contain control samples")
+        if "control" in sample:
+            raise AcquisitionError(
+                f"Sample {sample_id}: input controls are not supported"
+            )
 
     if consensus and consensus["enabled"] and config["assay"] != "atac":
         raise AcquisitionError("ATAC consensus requires an ATAC configuration")
@@ -999,11 +866,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
 
         specifications = condition_specs(
             consensus["conditions"],
-            sample_ids=[
-                sample_id
-                for sample_id in sample_ids
-                if role_by_id[sample_id] == "treatment"
-            ],
+            sample_ids=sample_ids,
             minimum_replicates=int(consensus["minimum_replicates"]),
         )
         for specification in specifications:
@@ -1088,13 +951,6 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
         for key in ("manifest", *CATALOG_FILE_FIELDS):
             path = Path(catalog_import[key])
             catalog_import[key] = str(
-                path if path.is_absolute() else (base / path).resolve()
-            )
-    contacts = config.get("contacts")
-    if contacts:
-        for key in ("source_manifest", "promoter_annotation"):
-            path = Path(contacts[key])
-            contacts[key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )
     nearest_tss_links = config.get("nearest_tss_links")

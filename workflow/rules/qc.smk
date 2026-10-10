@@ -154,34 +154,6 @@ rule frip:
         "../scripts/frip.py"
 
 
-rule chip_fingerprint:
-    input:
-        treatment=lambda wc: FINAL_BAMS[wc.sample],
-        control=lambda wc: FINAL_BAMS[SAMPLES[wc.sample]["control"]],
-        validated=final_bam_validation_input,
-        control_validated=peak_control_validation_input
-    output:
-        plot=f"{RESULT_ROOT}/qc/chip/{{sample}}.fingerprint.png",
-        counts=f"{RESULT_ROOT}/qc/chip/{{sample}}.fingerprint_counts.tsv"
-    params:
-        control_label=lambda wc: SAMPLES[wc.sample]["control"]
-    wildcard_constraints:
-        sample=CHIP_CONTROLLED_TREATMENT_RE
-    threads: 4
-    resources:
-        mem_mb=6000
-    conda:
-        "../envs/atac_qc.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/qc/{{sample}}.fingerprint.log"
-    shell:
-        "mkdir -p $(dirname {output.plot:q}) $(dirname {log:q}) && "
-        "plotFingerprint -b {input.treatment:q} {input.control:q} "
-        "--labels {wildcards.sample:q} {params.control_label:q} "
-        "--plotFile {output.plot:q} --outRawCounts {output.counts:q} "
-        "--numberOfProcessors {threads} > {log:q} 2>&1"
-
-
 rule chip_cross_correlation:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],

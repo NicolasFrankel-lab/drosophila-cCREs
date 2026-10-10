@@ -61,60 +61,87 @@ def test_technical_runs_must_have_identical_contexts(tmp_path: Path):
         read_sample_sheet(sheet)
 
 
-def test_matched_input_must_name_control_in_same_context(tmp_path: Path):
-    sheet = tmp_path / "samples.tsv"
-    sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\trole\tcontrol_library\n"
-        "SRR123\th3_rep1\th3k27ac\teye\ttreatment\tinput_rep1\n"
-        "SRR124\tinput_rep1\th3k27ac\twing\tcontrol\t\n"
-    )
-    with pytest.raises(AcquisitionError, match="same assay and context"):
-        read_sample_sheet(sheet)
-
-
-def test_chip_callpeak_shift_requires_bam_format(tmp_path: Path):
+def test_h3k27ac_callpeak_shift_requires_bam_format(tmp_path: Path):
     sheet = tmp_path / "samples.tsv"
     sheet.write_text(
         "accession\tlibrary_id\tassay\tcontext\tmacs3_shift\tmacs3_extsize\n"
-        "SRR123\ttf_rep1\tchip_tf\teye\t-75\t150\n"
+        "SRR123\th3_rep1\th3k27ac\teye\t-75\t150\n"
     )
     with pytest.raises(AcquisitionError, match="requires macs3_format=BAM"):
         read_sample_sheet(sheet)
 
 
-def test_curated_ip_only_table_is_minimal_and_covers_atlas_libraries():
-    resources = Path(__file__).parents[1] / "resources"
-    rows = read_sample_sheet(resources / "atlas_samples_ip_only.tsv")
+@pytest.mark.parametrize("assay", ["chip_tf", "chip_histone"])
+def test_only_atac_and_h3k27ac_assays_are_accepted(tmp_path: Path, assay):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        f"SRR123\tlib_rep1\t{assay}\teye\n"
+    )
+    with pytest.raises(AcquisitionError, match="assay must be one of atac, h3k27ac"):
+        read_sample_sheet(sheet)
 
-    assert len(rows) == 38
-    assert len({row["accession"] for row in rows}) == 38
-    assert len({row["library_id"] for row in rows}) == 37
+
+def test_h3k27ac_requires_broad_peaks(tmp_path: Path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\tmacs3_broad\n"
+        "SRR123\th3_rep1\th3k27ac\teye\tfalse\n"
+    )
+    with pytest.raises(AcquisitionError, match="macs3_broad=true"):
+        read_sample_sheet(sheet)
+
+
+def test_atlas_sample_sheet_is_the_eight_context_selection():
+    resources = Path(__file__).parents[1] / "resources"
+    rows = read_sample_sheet(resources / "atlas_samples.tsv")
+    contexts = {"ab", "e13", "e5", "ead", "hid", "lb", "o", "wid"}
+
+    assert len(rows) == 35
+    assert len({row["accession"] for row in rows}) == 35
     assert [row["library_id"] for row in rows].count("e5_atac_rep1") == 2
-    assert {row["context"] for row in rows if row["assay"] == "atac"} == {
-        "ab", "e11", "e13", "e5", "ead", "hid", "lb", "o", "wid"
-    }
-    atac_libraries: dict[str, set[str]] = defaultdict(set)
+    libraries: dict[tuple[str, str], set[str]] = defaultdict(set)
     for row in rows:
-        if row["assay"] == "atac":
-            atac_libraries[str(row["context"])].add(str(row["library_id"]))
-    assert all(len(libraries) >= 2 for libraries in atac_libraries.values())
-    assert all(row["control_library"] is None for row in rows)
+        libraries[(str(row["assay"]), str(row["context"]))].add(str(row["library_id"]))
+    assert {context for _assay, context in libraries} == contexts
+    assert sum(len(values) for (assay, _), values in libraries.items() if assay == "atac") == 20
+    assert (
+        sum(len(values) for (assay, _), values in libraries.items() if assay == "chip_histone")
+        == 14
+    )
+    assert all(len(libraries[("atac", context)]) >= 2 for context in contexts)
+    assert all(libraries[("chip_histone", context)] for context in contexts)
 
 
-def test_curated_controlled_table_links_three_matched_inputs():
+def test_atlas_qc_decisions_cover_every_atlas_library_once():
     resources = Path(__file__).parents[1] / "resources"
-    rows = read_sample_sheet(resources / "atlas_samples_with_inputs.tsv")
-    controls = {row["library_id"] for row in rows if row["role"] == "control"}
-    treatments = {
-        row["library_id"]: row["control_library"]
+    rows = read_sample_sheet(resources / "atlas_samples.tsv")
+    expected = {
+        str(row["library_id"]): (
+            "h3k27ac" if row["assay"] == "chip_histone" else str(row["assay"]),
+            str(row["context"]),
+        )
         for row in rows
-        if row["control_library"]
     }
+    lines = (resources / "atlas_qc_decisions.tsv").read_text().splitlines()
+    header = lines[0].split("\t")
+    decisions = [dict(zip(header, line.split("\t"))) for line in lines[1:]]
 
-    assert len(rows) == 41
-    assert controls == {"ab_input_rep1", "e5_input_rep1", "e5_input_rep2"}
-    assert treatments == {
-        "ab_h3k27ac_rep1": "ab_input_rep1",
-        "e5_h3k27ac_rep1": "e5_input_rep1",
-        "e5_h3k27ac_rep2": "e5_input_rep2",
-    }
+    assert header == [
+        "library_id",
+        "assay",
+        "context",
+        "qc_decision",
+        "estimated_fragment_length_bp",
+        "notes",
+    ]
+    assert len(decisions) == len({row["library_id"] for row in decisions})
+    assert {
+        row["library_id"]: (row["assay"], row["context"]) for row in decisions
+    } == expected
+    assert {row["qc_decision"] for row in decisions} == {"pass"}
+    assert all(
+        not row["estimated_fragment_length_bp"]
+        for row in decisions
+        if row["assay"] == "atac"
+    )

@@ -1,8 +1,8 @@
-"""Build the promoter registry for contact-independent nearest-TSS links."""
+"""Build the GTF promoter registry for nearest-TSS links."""
 
 from pathlib import Path
 
-from short_read_processing.contact_links import build_promoter_table
+from short_read_processing.nearest_tss_links import build_promoter_table
 
 
 metrics = build_promoter_table(

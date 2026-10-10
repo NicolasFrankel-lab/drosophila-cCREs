@@ -13,7 +13,7 @@ import tempfile
 from short_read_processing.accessions import AcquisitionError
 from short_read_processing.artifacts import read_final_bam_manifest
 from short_read_processing.cli import cli_main
-from short_read_processing.sample_sheet import read_delimited_rows
+from short_read_processing.sample_sheet import ASSAY_ALIASES, read_delimited_rows
 
 
 FIELDS = [
@@ -66,13 +66,24 @@ def _write_if_changed(path: Path, content: str) -> None:
             os.unlink(temporary_name)
 
 
-def _read_decisions(path: Path) -> dict[str, dict[str, str]]:
+def _read_decisions(
+    path: Path, *, assay: str | None = None
+) -> dict[str, dict[str, str]]:
     columns, rows = read_delimited_rows(path)
     missing = sorted(REVIEW_FIELDS - set(columns))
     if missing:
         raise AcquisitionError(
             f"{path} is missing required columns: " + ", ".join(missing)
         )
+    if assay is not None:
+        if "assay" not in columns:
+            raise AcquisitionError(f"{path} needs an assay column for --assay")
+        wanted = ASSAY_ALIASES.get(assay, assay)
+        rows = [
+            row
+            for row in rows
+            if ASSAY_ALIASES.get(row["assay"], row["assay"]) == wanted
+        ]
     decision_column = "qc_decision" if "qc_decision" in columns else "qc_status"
     if decision_column not in columns:
         raise AcquisitionError(
@@ -125,6 +136,11 @@ def main() -> int:
         type=Path,
         help="Legacy decision-table option",
     )
+    parser.add_argument(
+        "--assay",
+        choices=("atac", "h3k27ac"),
+        help="Use only decision rows for this assay (multi-assay decision tables)",
+    )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -134,7 +150,7 @@ def main() -> int:
         allow_rejected=True,
     )
     review_table = args.review_table or args.decisions
-    decisions = _read_decisions(review_table.resolve())
+    decisions = _read_decisions(review_table.resolve(), assay=args.assay)
     missing = sorted(set(source) - set(decisions))
     unknown = sorted(set(decisions) - set(source))
     if missing or unknown:

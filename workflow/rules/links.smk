@@ -1,4 +1,4 @@
-"""Contact-independent enhancer-to-nearest-TSS candidate links."""
+"""Nearest-annotated-TSS enhancer links and promoter activity."""
 
 
 if NEAREST_TSS_LINKS:
@@ -18,7 +18,7 @@ if NEAREST_TSS_LINKS:
         resources:
             mem_mb=4000
         conda:
-            "../envs/contacts.yaml"
+            "../envs/reporting.yaml"
         log:
             f"{RESULT_ROOT}/logs/activity/links/nearest-tss/promoters.log"
         script:
@@ -38,7 +38,7 @@ if NEAREST_TSS_LINKS:
         resources:
             mem_mb=8000
         conda:
-            "../envs/contacts.yaml"
+            "../envs/reporting.yaml"
         log:
             f"{RESULT_ROOT}/logs/activity/links/nearest-tss/enhancers.log"
         script:

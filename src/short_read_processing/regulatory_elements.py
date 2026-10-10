@@ -28,12 +28,13 @@ from .activity_tmm import (
 
 MAX_WINDOW_ORDER = ("center_500", "left_500", "right_500")
 WINDOW_ORDER = MAX_WINDOW_ORDER
+CATALOG_METHOD = "background_tmm_summit_max3_nonmember_percentile_v6"
 WINDOW_OFFSETS = {
     "left_500": (-750, -250),
     "center_500": (-250, 250),
     "right_500": (250, 750),
 }
-H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD = 0.60
+DEFAULT_H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD = 0.60
 WINDOW_FIELDS = [
     "window_id",
     "master_dhs_id",
@@ -136,6 +137,7 @@ CATALOG_FIELDS = [
 SUMMARY_FIELDS = [
     "context",
     "regulatory_class",
+    "blacklist_overlap",
     "h3k27ac_active",
     "activity_state",
     "element_n",
@@ -549,14 +551,33 @@ def _empirical_background_scores(
     return percentile, upper_tail
 
 
+def validate_activity_threshold(threshold: float) -> float:
+    """Return a background-percentile threshold strictly inside (0, 1)."""
+
+    value = float(threshold)
+    if not math.isfinite(value) or not 0 < value < 1:
+        raise ValueError("H3K27ac activity percentile threshold must be in (0, 1)")
+    return value
+
+
+def activity_state_label(threshold: float) -> str:
+    """Name the active state with the configured threshold, e.g. ``gt_0.60``."""
+
+    value = validate_activity_threshold(threshold)
+    text = f"{value:.2f}" if math.isclose(value * 100, round(value * 100)) else f"{value:g}"
+    return f"active_h3k27ac_background_gt_{text}"
+
+
 def _is_h3k27ac_active(
-    *, member: bool, blacklisted: bool, background_percentile: float | None
+    *,
+    member: bool,
+    background_percentile: float | None,
+    threshold: float = DEFAULT_H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD,
 ) -> bool:
     return bool(
         member
-        and not blacklisted
         and background_percentile is not None
-        and background_percentile > H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD
+        and background_percentile > threshold
     )
 
 
@@ -797,7 +818,10 @@ def build_h3k27ac_quantification(
         ),
         "background_definition": {
             "population": "same-context master DHSs with context_membership=0",
-            "blacklist_policy": "exclude master DHSs overlapping the reference blacklist",
+            "blacklist_policy": (
+                "exclude master DHSs overlapping the reference blacklist from "
+                "the background; percentiles are reported for every row"
+            ),
             "signal": "h3k27ac_max_500_normalized_cpm_per_kb",
             "percentile": "midrank empirical CDF",
             "upper_tail_probability": "(1 + count(background >= signal)) / (1 + background_n)",
@@ -910,8 +934,17 @@ def build_regulatory_catalog(
     output_summary: Path,
     output_metrics: Path,
     output_provenance: Path,
+    activity_threshold: float = DEFAULT_H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD,
 ) -> dict[str, Any]:
-    """Call max3 background-percentile activity and write the catalog."""
+    """Call max3 background-percentile activity and write the catalog.
+
+    Every context-member DHS is tested against the blacklist-clear,
+    context-nonmember background. Blacklist-overlapping members receive the
+    same call and are flagged by ``blacklist_overlap``.
+    """
+
+    activity_threshold = validate_activity_threshold(activity_threshold)
+    active_state = activity_state_label(activity_threshold)
 
     if not contexts or len(contexts) != len(set(contexts)):
         raise ValueError("Contexts must be non-empty and unique")
@@ -989,7 +1022,7 @@ def build_regulatory_catalog(
                 ],
             }
 
-    summary_counts: dict[tuple[str, str, int, str], int] = {}
+    summary_counts: dict[tuple[str, str, int, int, str], int] = {}
 
     def catalog_row(context: str, element) -> dict[str, Any]:
         key = (element.master_id, context)
@@ -1005,18 +1038,15 @@ def build_regulatory_catalog(
         member = membership[key]
         distance, tss_ids = nearest_tss(element.chrom, element.summit, tss)
         element_class = regulatory_class(distance)
-        blacklisted = bool(blacklist_by_element[element.master_id]["blacklist_overlap"])
         active = _is_h3k27ac_active(
             member=bool(member),
-            blacklisted=blacklisted,
             background_percentile=aggregate["background_percentile"],
+            threshold=activity_threshold,
         )
         if not member:
             state = "inactive_in_context"
-        elif blacklisted:
-            state = "excluded_blacklist"
         elif active:
-            state = "active_h3k27ac_background_gt_0.60"
+            state = active_state
         elif aggregate["max_value"] <= 0:
             state = "accessible_no_h3k27ac_signal"
         else:
@@ -1079,6 +1109,7 @@ def build_regulatory_catalog(
                 summary_key = (
                     context,
                     row["regulatory_class"],
+                    row["blacklist_overlap"],
                     row["h3k27ac_active"],
                     row["activity_state"],
                 )
@@ -1136,6 +1167,7 @@ def build_regulatory_catalog(
         {
             "context": context,
             "regulatory_class": element_class,
+            "blacklist_overlap": blacklisted,
             "h3k27ac_active": active,
             "activity_state": state,
             "element_n": count,
@@ -1143,6 +1175,7 @@ def build_regulatory_catalog(
         for (
             context,
             element_class,
+            blacklisted,
             active,
             state,
         ), count in sorted(summary_counts.items())
@@ -1151,7 +1184,7 @@ def build_regulatory_catalog(
     _atomic_text_if_changed(output_summary, summary_content)
 
     metrics = {
-        "method": "background_tmm_summit_max3_nonmember_percentile_v5",
+        "method": CATALOG_METHOD,
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "catalog_row_count": len(elements) * len(contexts),
@@ -1171,10 +1204,12 @@ def build_regulatory_catalog(
                 "blacklist-overlapping elements"
             ),
             "percentile": "midrank empirical CDF",
-            "threshold": H3K27AC_ACTIVITY_PERCENTILE_THRESHOLD,
+            "threshold": activity_threshold,
             "comparison": "strictly_greater_than",
+            "active_state": active_state,
             "call_population": (
-                "context-member master DHSs excluding blacklist-overlapping elements"
+                "all context-member master DHSs; blacklist-overlapping members "
+                "are called and flagged with blacklist_overlap=1"
             ),
         },
         "regulatory_class_definition": {
@@ -1189,7 +1224,10 @@ def build_regulatory_catalog(
             "blacklist_overlap": "1 when at least one master-DHS base overlaps the reference blacklist",
             "blacklist_overlap_bp": "unioned number of overlapping bases",
             "blacklist_overlap_fraction": "blacklist_overlap_bp divided by master-DHS width",
-            "filtering_policy": "retain and annotate all rows; blacklist overlaps cannot be active",
+            "filtering_policy": (
+                "retain, test and annotate all rows; blacklist-overlapping DHSs "
+                "are excluded only from the activity background"
+            ),
         },
         "catalog_sha256": sha256_file(output_catalog),
         "wide_catalog_sha256": sha256_file(output_wide),
@@ -1209,10 +1247,25 @@ def build_regulatory_catalog(
                 for (
                     summary_context,
                     _element_class,
+                    _blacklisted,
                     active,
                     _state,
                 ), count in summary_counts.items()
                 if summary_context == context and active
+            )
+            for context in contexts
+        },
+        "active_blacklist_overlap_element_count_by_context": {
+            context: sum(
+                count
+                for (
+                    summary_context,
+                    _element_class,
+                    blacklisted,
+                    active,
+                    _state,
+                ), count in summary_counts.items()
+                if summary_context == context and active and blacklisted
             )
             for context in contexts
         },

@@ -17,7 +17,6 @@ from short_read_processing.configuration import (
     generate_configs,
     generate_resume_config,
 )
-from short_read_processing.contact_metadata import DM6_ATLAS_CONTEXT_IDS
 from short_read_processing.manifest import write_manifest
 from short_read_processing.workflow_config import (
     resolve_input_paths,
@@ -26,7 +25,8 @@ from short_read_processing.workflow_config import (
 )
 
 
-HEADER = "accession\tlibrary_id\tassay\tcontext\trole\tcontrol_library\tpeak_caller"
+ATLAS_CONTEXT_IDS = ("ab", "e13", "e5", "ead", "hid", "lb", "o", "wid")
+HEADER = "accession\tlibrary_id\tassay\tcontext\tpeak_caller"
 
 
 def _run_plan(root: Path, requested: str, run: str, layout: str = "PAIRED") -> RunPlan:
@@ -76,9 +76,9 @@ def test_atac_defaults_and_contexts_group_biological_and_technical_runs(tmp_path
     ]
     sheet = (
         HEADER
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123457\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123458\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123457\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123458\tatac_rep2\tatac\tembryo\t\n"
     )
     output = _generate(tmp_path, plans, sheet)[0]
     config = yaml.safe_load(output.read_text())
@@ -135,8 +135,8 @@ def test_identical_config_generation_does_not_replace_file(tmp_path):
     ]
     sheet = (
         HEADER
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\t\n"
     )
     output = _generate(tmp_path, plans, sheet)[0]
     original = output.read_bytes()
@@ -163,8 +163,8 @@ def test_config_records_requested_output_stage(tmp_path):
     plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
     sheet = (
         HEADER
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\t\n"
     )
 
     output = _generate(tmp_path, plans, sheet, output_stage="qc")[0]
@@ -177,8 +177,8 @@ def test_alignment_chunking_is_recorded_but_not_scientific(tmp_path):
     plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
     sheet = (
         HEADER
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\t\n"
     )
     output = _generate(tmp_path, plans, sheet, alignment_chunk_pairs=2)[0]
     config = yaml.safe_load(output.read_text())
@@ -195,7 +195,7 @@ def test_alignment_chunking_is_recorded_but_not_scientific(tmp_path):
 @pytest.mark.parametrize("chunk_pairs", [0, -1])
 def test_alignment_chunking_rejects_nonpositive_sizes(tmp_path, chunk_pairs):
     plan = _run_plan(tmp_path / "raw", "SRR123456", "SRR123456")
-    sheet = HEADER + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t\n"
+    sheet = HEADER + "\nSRR123456\tatac_rep1\tatac\tembryo\t\n"
 
     with pytest.raises(AcquisitionError, match="chunk pairs must be positive"):
         _generate(tmp_path, [plan], sheet, alignment_chunk_pairs=chunk_pairs)
@@ -206,8 +206,8 @@ def test_accession_input_cannot_construct_master_before_manual_review(tmp_path):
     plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
     sheet = (
         HEADER
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
-        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\t\n"
     )
 
     with pytest.raises(AcquisitionError, match="Cannot stop at 'master'"):
@@ -243,8 +243,8 @@ def test_atac_callpeak_override_applies_to_every_context_replicate(tmp_path):
     header = HEADER + "\tmacs3_qvalue\tmacs3_shift\tmacs3_extsize"
     sheet = (
         header
-        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\tcallpeak\t0.01\t-75\t150"
-        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\tcallpeak\t0.01\t-75\t150\n"
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\tcallpeak\t0.01\t-75\t150"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\tcallpeak\t0.01\t-75\t150\n"
     )
     output = _generate(tmp_path, plans, sheet)[0]
     peaks = [sample["peak_caller"] for sample in yaml.safe_load(output.read_text())["samples"]]
@@ -255,53 +255,15 @@ def test_atac_callpeak_override_applies_to_every_context_replicate(tmp_path):
     assert all(peak["spmr"] is False for peak in peaks)
 
 
-def test_h3k27ac_alias_is_broad_and_resolves_matched_input(tmp_path):
-    plans = [
-        _run_plan(tmp_path / "raw", "SRR100001", "SRR100001"),
-        _run_plan(tmp_path / "raw", "SRR100002", "SRR100002"),
-    ]
-    sheet = (
-        HEADER
-        + "\nSRR100001\th3_rep1\th3k27ac\teye\ttreatment\teye_input\t"
-        + "\nSRR100002\teye_input\th3k27ac\teye\tcontrol\t\t\n"
-    )
-    output = _generate(tmp_path, plans, sheet, genome="hg38")[0]
-    config = yaml.safe_load(output.read_text())
-    treatment = config["samples"][0]
-
-    assert config["assay"] == "chip_histone"
-    assert config["reference"]["name"] == "hg38"
-    assert treatment["control"] == "eye_input"
-    assert treatment["peak_caller"]["command"] == "callpeak"
-    assert treatment["peak_caller"]["broad"] is True
-    assert treatment["peak_caller"]["broad_cutoff"] == 0.1
-    assert "peak_caller" not in config["samples"][1]
-
-
-def test_matched_ip_and_input_must_have_same_resolved_layout(tmp_path):
-    plans = [
-        _run_plan(tmp_path / "raw", "SRR100001", "SRR100001", layout="PAIRED"),
-        _run_plan(tmp_path / "raw", "SRR100002", "SRR100002", layout="SINGLE"),
-    ]
-    sheet = (
-        HEADER
-        + "\nSRR100001\th3_rep1\th3k27ac\teye\ttreatment\teye_input\t"
-        + "\nSRR100002\teye_input\th3k27ac\teye\tcontrol\t\t\n"
-    )
-
-    with pytest.raises(AcquisitionError, match="same read layout"):
-        _generate(tmp_path, plans, sheet)
-
-
 def test_mixed_atlas_table_generates_separate_atac_and_h3k27ac_configs(tmp_path):
     accessions = ("SRR100001", "SRR100002", "SRR100003", "SRR100004")
     plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
     sheet = (
         HEADER
-        + "\nSRR100001\teye_atac_rep1\tatac\teye\ttreatment\t\t"
-        + "\nSRR100002\teye_atac_rep2\tatac\teye\ttreatment\t\t"
-        + "\nSRR100003\teye_h3_rep1\th3k27ac\teye\ttreatment\teye_input\t"
-        + "\nSRR100004\teye_input\th3k27ac\teye\tcontrol\t\t\n"
+        + "\nSRR100001\teye_atac_rep1\tatac\teye\t"
+        + "\nSRR100002\teye_atac_rep2\tatac\teye\t"
+        + "\nSRR100003\teye_h3_rep1\th3k27ac\teye\t"
+        + "\nSRR100004\teye_h3_rep2\th3k27ac\teye\t\n"
     )
 
     outputs = _generate(tmp_path, plans, sheet)
@@ -311,7 +273,9 @@ def test_mixed_atlas_table_generates_separate_atac_and_h3k27ac_configs(tmp_path)
     assert configs["atac"].name == "test-project.atac.dm6.yaml"
     assert configs["chip_histone"].name == "test-project.chip_histone.dm6.yaml"
     chip = yaml.safe_load(configs["chip_histone"].read_text())
-    assert chip["samples"][0]["control"] == "eye_input"
+    assert [sample["id"] for sample in chip["samples"]] == ["eye_h3_rep1", "eye_h3_rep2"]
+    assert all("control" not in sample for sample in chip["samples"])
+    assert all(sample["peak_caller"]["broad"] for sample in chip["samples"])
 
 
 def test_h3k27ac_can_run_ip_only_from_four_columns(tmp_path):
@@ -329,6 +293,18 @@ def test_h3k27ac_can_run_ip_only_from_four_columns(tmp_path):
     assert treatment["parameters"]["trimming"]["adapter_preset"] == "truseq"
 
 
+@pytest.mark.parametrize("column", ["role", "control_library"])
+def test_input_control_columns_are_rejected(tmp_path, column):
+    plan = _run_plan(tmp_path / "raw", "SRR100001", "SRR100001")
+    sheet = (
+        f"accession\tlibrary_id\tassay\tcontext\t{column}\n"
+        "SRR100001\th3_rep1\th3k27ac\teye\t\n"
+    )
+
+    with pytest.raises(AcquisitionError, match="processed IP-only"):
+        _generate(tmp_path, [plan], sheet)
+
+
 def test_atac_context_requires_two_biological_libraries(tmp_path):
     plan = _run_plan(tmp_path / "raw", "SRR100001", "SRR100001")
     sheet = (
@@ -343,7 +319,7 @@ def test_removed_hmmratac_peak_caller_is_rejected(tmp_path):
     plan = _run_plan(tmp_path / "raw", "SRR100001", "SRR100001")
     sheet = (
         HEADER
-        + "\nSRR100001\tatac_rep1\tatac\teye\ttreatment\t\thmmratac\n"
+        + "\nSRR100001\tatac_rep1\tatac\teye\thmmratac\n"
     )
     with pytest.raises(AcquisitionError, match="peak_caller must be one of callpeak"):
         _generate(tmp_path, [plan], sheet)
@@ -908,13 +884,47 @@ def test_activity_config_requires_complete_accepted_contexts(tmp_path):
         "final_bam_manifest",
     }
     assert config["samples"] == []
-    assert config["activity"]["schema_version"] == 5
+    assert config["activity"]["schema_version"] == 6
     assert (
         config["activity"]["h3k27ac_signal"]
         == "summit_max3_background_tmm_v3"
     )
     assert config["activity"]["h3k27ac_activity_percentile_threshold"] == 0.60
     assert config["activity"]["contexts"] == ["eye"]
+
+    custom = generate_activity_config(
+        sample_sheet_path=sheet,
+        final_bam_manifests=[manifest],
+        master_manifest_path=master_manifest,
+        output_dir=tmp_path / "configs-threshold",
+        project="activity-test",
+        run_id="activity-threshold-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_files=True,
+        output_stage="quantification",
+        h3k27ac_activity_threshold=0.75,
+    )
+    custom_config = yaml.safe_load(custom.read_text())
+    assert custom_config["activity"]["h3k27ac_activity_percentile_threshold"] == 0.75
+    assert (
+        custom_config["provenance"]["semantic_sha256"]
+        != config["provenance"]["semantic_sha256"]
+    )
+    with pytest.raises(AcquisitionError, match=r"must be in \(0, 1\)"):
+        generate_activity_config(
+            sample_sheet_path=sheet,
+            final_bam_manifests=[manifest],
+            master_manifest_path=master_manifest,
+            output_dir=tmp_path / "configs-invalid",
+            project="activity-test",
+            run_id="activity-invalid-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_files=True,
+            output_stage="quantification",
+            h3k27ac_activity_threshold=1.0,
+        )
     assert config["activity"]["atac_browser_extension_bp"] == 150
     assert config["activity"]["normalization"] == "background_tmm_10kb_autosomes_v1"
     assert {
@@ -1071,7 +1081,7 @@ def test_complete_dm6_atlas_config_defaults_to_nearest_tss_links(tmp_path):
     sheet_rows = ["accession\tlibrary_id\tassay\tcontext"]
     manifest_rows = []
     accession = 200000
-    for context in sorted(DM6_ATLAS_CONTEXT_IDS):
+    for context in sorted(ATLAS_CONTEXT_IDS):
         for assay, manifest_assay in (
             ("atac", "atac"),
             ("h3k27ac", "chip_histone"),
@@ -1106,30 +1116,6 @@ def test_complete_dm6_atlas_config_defaults_to_nearest_tss_links(tmp_path):
         "nearest_annotated_tss_all_ties_v1"
     )
 
-    output = generate_activity_config(
-        sample_sheet_path=sheet,
-        final_bam_manifests=[manifest],
-        master_manifest_path=_write_master_manifest(tmp_path),
-        output_dir=tmp_path / "configs",
-        project="activity-test",
-        run_id="links-with-contacts-v1",
-        reference_root=tmp_path / "references",
-        path_base=tmp_path,
-        require_files=True,
-        output_stage="links",
-        include_contacts=True,
-    )
-    config = yaml.safe_load(output.read_text())
-
-    assert len(config["contacts"]["contexts"]) == 9
-    assert {
-        row["id"]
-        for row in config["contacts"]["contexts"]
-        if row["strategy"] == "powerlaw"
-    } == {"e13", "hid"}
-    assert config["contacts"]["source_manifest"].endswith(
-        "resources/atlas_contact_sources.tsv"
-    )
 
 
 def _write_catalog_bundle_manifest(tmp_path: Path, sheet: Path) -> Path:
@@ -1146,7 +1132,7 @@ def _write_catalog_bundle_manifest(tmp_path: Path, sheet: Path) -> Path:
         json.dumps(
             {
                 "catalog_sha256": catalog_digest,
-                "context_count": len(DM6_ATLAS_CONTEXT_IDS),
+                "context_count": len(ATLAS_CONTEXT_IDS),
                 "method": "catalog-v1",
             }
         )
@@ -1162,7 +1148,7 @@ def _write_catalog_bundle_manifest(tmp_path: Path, sheet: Path) -> Path:
                 "project": "source-atlas",
                 "run_id": "catalog-v1",
                 "reference": {"name": "dm6"},
-                "activity": {"contexts": sorted(DM6_ATLAS_CONTEXT_IDS)},
+                "activity": {"contexts": sorted(ATLAS_CONTEXT_IDS)},
                 "provenance": {
                     "semantic_sha256": "c" * 64,
                     "sample_sheet_sha256": sha256_file(sheet),
@@ -1189,7 +1175,7 @@ def _write_catalog_bundle_manifest(tmp_path: Path, sheet: Path) -> Path:
     values = [
         "dm6",
         "catalog-v1",
-        ",".join(sorted(DM6_ATLAS_CONTEXT_IDS)),
+        ",".join(sorted(ATLAS_CONTEXT_IDS)),
         "source-atlas",
         "catalog-v1",
     ]
@@ -1236,31 +1222,6 @@ def test_catalog_import_generates_a_new_links_only_namespace(tmp_path):
     ]
     validate_workflow_config(config)
     resolve_input_paths(config, tmp_path)
-
-
-def test_catalog_import_can_opt_into_contact_branch(tmp_path):
-    sheet = tmp_path / "atlas.tsv"
-    sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR100001\tatac_rep1\tatac\tab\n"
-    )
-    manifest = _write_catalog_bundle_manifest(tmp_path, sheet)
-
-    output = generate_catalog_links_config(
-        sample_sheet_path=sheet,
-        catalog_manifest_path=manifest,
-        output_dir=tmp_path / "configs",
-        project="atlas-links",
-        run_id="from-catalog-contacts-v1",
-        reference_root=tmp_path / "references",
-        path_base=tmp_path,
-        include_contacts=True,
-    )
-    config = yaml.safe_load(output.read_text())
-
-    assert {row["id"] for row in config["contacts"]["contexts"]} == set(
-        DM6_ATLAS_CONTEXT_IDS
-    )
 
 
 def test_catalog_import_rejects_a_different_sample_sheet(tmp_path):

@@ -2,9 +2,11 @@ import csv
 import gzip
 from pathlib import Path
 
-from short_read_processing.contact_links import PROMOTER_FIELDS, _atomic_tsv
 from short_read_processing.nearest_tss_links import (
+    PROMOTER_FIELDS,
+    _atomic_tsv,
     build_nearest_tss_enhancer_candidates,
+    build_promoter_table,
 )
 
 
@@ -39,6 +41,7 @@ def _catalog_row(
     member,
     regulatory_class,
     posterior,
+    blacklisted=False,
 ):
     return {
         "master_dhs_id": master_id,
@@ -56,7 +59,7 @@ def _catalog_row(
             "active_h3k27ac_background_gt_0.60" if member else "inactive_in_context"
         ),
         "combined_activity_max_500": 3 if member else 0,
-        "blacklist_overlap": 0,
+        "blacklist_overlap": int(blacklisted),
     }
 
 
@@ -215,3 +218,101 @@ def test_wide_nearest_tss_output_is_byte_deterministic(tmp_path):
         outputs.append(output.read_bytes())
 
     assert outputs[0] == outputs[1]
+
+
+def test_blacklisted_dhs_is_flagged_but_does_not_activate_a_promoter(tmp_path):
+    promoters = tmp_path / "promoters.tsv.gz"
+    _atomic_tsv(
+        promoters,
+        PROMOTER_FIELDS,
+        [
+            {
+                "promoter_id": "DM6PROM00000001",
+                "gene_id": "gene_a",
+                "gene_name": "A",
+                "chrom": "chr2L",
+                "tss": 1000,
+                "strand": "+",
+                "start": 500,
+                "end": 1500,
+                "transcript_ids": "tx_a",
+                "transcript_n": 1,
+                "selection_rule": "all_distinct_gene_tss",
+            }
+        ],
+    )
+    catalog = tmp_path / "catalog.tsv.gz"
+    _atomic_tsv(
+        catalog,
+        CATALOG_FIELDS,
+        [
+            _catalog_row(
+                "enh_blacklisted",
+                3000,
+                "c1",
+                member=True,
+                regulatory_class="distal_enhancer_like",
+                posterior=0.9,
+                blacklisted=True,
+            ),
+            _catalog_row(
+                "support_blacklisted",
+                1000,
+                "c1",
+                member=True,
+                regulatory_class="promoter_associated",
+                posterior=0.9,
+                blacklisted=True,
+            ),
+        ],
+    )
+    output = tmp_path / "wide.tsv.gz"
+    metrics = build_nearest_tss_enhancer_candidates(
+        catalog_path=catalog,
+        promoters_path=promoters,
+        contexts=["c1"],
+        enhancer_classes=["proximal_enhancer_like", "distal_enhancer_like"],
+        output=output,
+        metrics_output=tmp_path / "wide.json",
+    )
+
+    (row,) = _read_tsv(output)
+    assert row["master_dhs_id"] == "enh_blacklisted"
+    assert row["blacklist_overlap"] == "1"
+    assert row["c1__element_h3k27ac_active"] == "1"
+    assert row["c1__nearest_promoter_active"] == "0"
+    assert row["c1__nearest_promoter_h3k27ac_background_percentile_max"] == ""
+    assert metrics["enhancer_with_active_nearest_promoter_by_context"] == {"c1": 0}
+
+
+def test_promoter_table_uses_plus_minus_500_bp_window(tmp_path):
+    annotation = tmp_path / "genes.gtf"
+    annotation.write_text(
+        "chr2L\ttest\ttranscript\t1001\t2000\t.\t+\t.\t"
+        'gene_id "gene_a"; transcript_id "tx_a"; gene_name "A";\n'
+        "chr2L\ttest\ttranscript\t3001\t4000\t.\t-\t.\t"
+        'gene_id "gene_b"; transcript_id "tx_b"; gene_name "B";\n'
+        "chr2L\ttest\ttranscript\t3001\t4000\t.\t-\t.\t"
+        'gene_id "gene_b"; transcript_id "tx_b2"; gene_name "B";\n',
+        encoding="utf-8",
+    )
+    chrom_sizes = tmp_path / "chrom.sizes"
+    chrom_sizes.write_text("chr2L\t10000\n", encoding="utf-8")
+    output = tmp_path / "promoters.tsv.gz"
+
+    metrics = build_promoter_table(
+        annotation=annotation,
+        chrom_sizes=chrom_sizes,
+        canonical_chromosomes=None,
+        promoter_width=1000,
+        output=output,
+        metrics_output=tmp_path / "promoters.json",
+    )
+
+    rows = _read_tsv(output)
+    assert [(row["gene_id"], row["tss"], row["start"], row["end"]) for row in rows] == [
+        ("gene_a", "1000", "500", "1500"),
+        ("gene_b", "3999", "3499", "4499"),
+    ]
+    assert rows[1]["transcript_ids"] == "tx_b;tx_b2"
+    assert metrics["promoter_count"] == 2

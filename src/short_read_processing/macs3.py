@@ -19,12 +19,11 @@ def callpeak_arguments(
     peak_config: dict[str, Any],
     *,
     treatment_bam: Path,
-    control_bam: Path | None,
     name: str,
     genome_size: str | int,
     output_dir: Path,
 ) -> list[str]:
-    """Return a shell-safe argv list for the q-value MACS3 callpeak branch."""
+    """Return a shell-safe argv list for IP-only q-value MACS3 callpeak."""
 
     if peak_config.get("command") != "callpeak":
         raise AcquisitionError("MACS3 callpeak arguments require command=callpeak")
@@ -51,8 +50,6 @@ def callpeak_arguments(
         "-B",
         "--SPMR",
     ]
-    if control_bam is not None:
-        arguments.extend(["-c", str(control_bam)])
     if peak_config.get("broad"):
         arguments.extend(["--broad", "--broad-cutoff", str(peak_config["broad_cutoff"])])
     if peak_config.get("nomodel"):

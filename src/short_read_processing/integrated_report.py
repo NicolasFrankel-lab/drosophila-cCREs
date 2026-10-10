@@ -230,7 +230,41 @@ def _source_records(source_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
-def _qc_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _qc_source_roots(
+    records: list[dict[str, Any]], libraries: dict[str, dict[str, Any]]
+) -> dict[str, set[Path] | None]:
+    """Match library QC to the selected BAM checksum in upstream manifests."""
+
+    roots = {
+        sample: set() if library.get("bam_sha256") else None
+        for sample, library in libraries.items()
+    }
+    for record in records:
+        if record["kind"] not in {"manifest", "final_bam_manifest"}:
+            continue
+        for row in _read_tsv(record["path"]):
+            sample = row.get("library_id", "")
+            if (
+                sample in roots
+                and roots[sample] is not None
+                and row.get("bam_sha256") == libraries[sample]["bam_sha256"]
+            ):
+                roots[sample].add(Path(record["source_root"]).resolve())
+    return roots
+
+
+def _selected_qc_source(
+    sample: str, record: dict[str, Any], roots: dict[str, set[Path] | None]
+) -> bool:
+    return sample in roots and (
+        roots[sample] is None
+        or Path(record["source_root"]).resolve() in roots[sample]
+    )
+
+
+def _qc_rows(
+    records: list[dict[str, Any]], roots: dict[str, set[Path] | None]
+) -> list[dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for record in records:
         if record["kind"] != "qc_metrics":
@@ -242,6 +276,8 @@ def _qc_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sample = str(row.get("sample", ""))
             if not sample:
                 raise ValueError(f"QC metric lacks sample: {record['path']}")
+            if not _selected_qc_source(sample, record, roots):
+                continue
             if sample in rows and rows[sample] != row:
                 raise ValueError(f"Conflicting upstream QC metrics for {sample}")
             rows[sample] = row
@@ -335,13 +371,23 @@ def build_integrated_qc_report(
     factors = _read_tsv(current_files["normalization_factors"])
     summary = _read_tsv(current_files["regulatory_element_summary"])
     nearest_tss_metrics = _read_json(current_files["nearest_tss_enhancer_metrics"])
-    contact_metrics = (
-        _read_json(current_files["contact_graph_metrics"])
-        if "contact_graph_metrics" in current_files
-        else None
+    activity_threshold = float(catalog_metrics["activity_definition"]["threshold"])
+    blacklist_active_counts = catalog_metrics.get(
+        "active_blacklist_overlap_element_count_by_context", {}
     )
-    qc_rows = _qc_rows(records)
-    cross_correlation = _cross_correlation_rows(records)
+    qc_sources = _qc_source_roots(records, library_metadata)
+    qc_rows = _qc_rows(records, qc_sources)
+    cross_correlation = _cross_correlation_rows(
+        [
+            record for record in records
+            if record["kind"] == "cross_correlation"
+            and _selected_qc_source(
+                record["path"].name.removesuffix(".cross_correlation.txt"),
+                record,
+                qc_sources,
+            )
+        ]
+    )
 
     warnings = []
     for library in excluded:
@@ -439,7 +485,13 @@ def build_integrated_qc_report(
         for name, path in sorted(current_files.items())
     ]
 
-    tss_profiles = [record for record in records if record["kind"] == "tss_profile"]
+    tss_profiles = [
+        record for record in records
+        if record["kind"] == "tss_profile"
+        and _selected_qc_source(
+            record["path"].name.removesuffix(".profile.png"), record, qc_sources
+        )
+    ]
     profile_html = "".join(
         '<figure class="profile">'
         f'<img src="{_data_uri(record["path"])}" alt="{html.escape(record["path"].stem)} TSS profile"/>'
@@ -478,36 +530,10 @@ def build_integrated_qc_report(
         "enhancer_with_active_nearest_promoter_by_context", {}
     )
     nearest_tss_section = f"""
-<section class="stage"><h2>6. Default nearest-TSS enhancer candidates</h2>
+<section class="stage"><h2>6. Nearest-TSS enhancer annotation</h2>
 {_cards([('Enhancers', nearest_tss_metrics.get('enhancer_count')), ('Enhancers with tied nearest TSSs', nearest_tss_metrics.get('nearest_tss_tie_element_count')), ('No same-chromosome TSS', nearest_tss_metrics.get('no_same_chromosome_promoter_count')), ('Assignment', 'nearest annotated TSS')])}
-<p>This contact-independent branch has one row per proximal or distal enhancer. It retains every exact nearest-distance TSS tie in that row, reports gene and transcript identifiers, and adds per-context element activity plus whether any tied nearest promoter is active. Promoter activity requires a catalog-active context-member master-DHS summit within inclusive ±500 bp of the exact TSS. Enhancers are not filtered from this atlas-wide table by their own activity state.</p>
+<p>This table has one row per proximal or distal enhancer. It retains every exact nearest-distance TSS tie in that row, reports gene and transcript identifiers, and adds per-context element activity plus whether any tied nearest promoter is active. Promoter activity requires a catalog-active context-member master-DHS summit within inclusive ±500 bp of the exact TSS. Enhancers are not filtered from this atlas-wide table by their own activity state.</p>
 {_bar_chart('Enhancers whose nearest promoter is active by context', [(context, float(nearest_active_counts.get(context, 0))) for context in contexts], color='#3b8f6f')}
-</section>
-"""
-
-    contact_section = ""
-    if contact_metrics is not None:
-        contact_rows = [
-            [
-                context,
-                values["contact_strategy"],
-                values["contact_assay"],
-                values["contact_match"],
-                values["contact_resolution_bp"],
-                values["active_promoter_count"],
-                values["element_promoter_edge_count"],
-                values["element_gene_candidate_count"],
-                values.get("active_contact_enhancer_gene_candidate_count", 0),
-                values.get("nearest_active_promoter_gene_candidate_count", 0),
-                values.get("active_distance_enhancer_gene_candidate_count", 0),
-            ]
-            for context, values in sorted(contact_metrics["contexts"].items())
-        ]
-        contact_section = f"""
-<section class="stage"><h2>7. Optional context contact links and candidate genes</h2>
-{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count')), ('Focused observed-contact candidates', contact_metrics.get('active_contact_enhancer_gene_candidate_count')), ('Nearest-active-promoter candidates', contact_metrics.get('nearest_active_promoter_gene_candidate_count')), ('Focused distance candidates', contact_metrics.get('active_distance_enhancer_gene_candidate_count'))])}
-<p>This opt-in branch uses merged, ICE-balanced contact matrices for observed contexts. Configured contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity. The per-context nearest-active-TSS projection inside this branch is supplementary; the wide default table above is independent of contact processing. Focused distance tables remain power-law rankings rather than measured contacts.</p>
-{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates', 'Focused observed', 'Nearest active TSS', 'Focused distance'], contact_rows, compact=True)}
 </section>
 """
 
@@ -555,7 +581,7 @@ def build_integrated_qc_report(
 <p class="subtitle">Project <strong>{html.escape(str(config['project']))}</strong> · run <strong>{html.escape(str(config['run_id']))}</strong> · genome <strong>{html.escape(str(config['reference']['name']))}</strong></p>
 {_cards([('Contexts', len(contexts)), ('Accepted libraries', len(activity['libraries'])), ('Excluded libraries', len(excluded)), ('Master DHSs', master_metrics.get('master_dhs_count')), ('Active calls', sum(sum(value.values()) for value in active_counts.values()))])}
 <h2>Executive QC status</h2>{warning_html}
-<p>The scientific endpoint uses exact variable-width master DHS ATAC signal, the maximum normalized density among three summit-centered H3K27ac windows, assay-specific 10-kb-background TMM, and a context-specific empirical background percentile. Activity requires a blacklist-clear context member above the 0.60 percentile of blacklist-clear DHSs that do not contribute to that context.</p>
+<p>The scientific endpoint uses exact variable-width master DHS ATAC signal, the maximum normalized density among three summit-centered H3K27ac windows, assay-specific 10-kb-background TMM, and a context-specific empirical background percentile. Activity requires a context member above the {activity_threshold:.2f} percentile of blacklist-clear DHSs that do not contribute to that context. Blacklist-overlapping context members are called with the same rule and flagged.</p>
 
 <section class="stage"><h2>1. Inputs and provenance</h2>
 <h3>Workflow provenance</h3>{_table(['Field', 'Value'], provenance_rows)}
@@ -584,15 +610,13 @@ def build_integrated_qc_report(
 </section>
 
 <section class="stage"><h2>5. Regulatory-element catalog</h2>
-{_cards([('Catalog rows', catalog_metrics.get('catalog_row_count')), ('Master DHSs', catalog_metrics.get('master_dhs_count')), ('Contexts', catalog_metrics.get('context_count')), ('Activity threshold', '> 0.60 background percentile')])}
+{_cards([('Catalog rows', catalog_metrics.get('catalog_row_count')), ('Master DHSs', catalog_metrics.get('master_dhs_count')), ('Contexts', catalog_metrics.get('context_count')), ('Activity threshold', f'> {activity_threshold:.2f} background percentile'), ('Blacklist-flagged active calls', sum(int(value) for value in blacklist_active_counts.values()))])}
 {_stacked_chart('Active elements by TSS-distance class', contexts, active_counts)}
 </section>
 
 {nearest_tss_section}
 
-{contact_section}
-
-<section class="stage"><h2>{'8' if contact_metrics is not None else '7'}. Outputs and audit trail</h2>
+<section class="stage"><h2>7. Outputs and audit trail</h2>
 <p>Every listed artifact is an explicit workflow input to this report. Sizes and checksum prefixes make the report auditable without embedding the large count tables themselves.</p>
 {_table(['Output', 'Path', 'Bytes', 'SHA-256 prefix'], output_inventory, compact=True)}
 </section>
@@ -604,7 +628,7 @@ def build_integrated_qc_report(
     metrics = {
         "status": "ok",
         "schema_version": 2,
-        "method": "integrated_regulatory_catalog_links_qc_report_v6",
+        "method": "integrated_regulatory_catalog_links_qc_report_v8",
         "project": config["project"],
         "run_id": config["run_id"],
         "contexts": contexts,
@@ -613,8 +637,14 @@ def build_integrated_qc_report(
         "accepted_library_count": len(activity["libraries"]),
         "excluded_library_count": len(excluded),
         "upstream_qc_library_count": len(qc_rows),
+        "qc_source_selection": {
+            "method": "library_id_and_selected_bam_sha256",
+            "source_roots_by_library": {
+                sample: sorted(str(root) for root in roots) if roots is not None else None
+                for sample, roots in sorted(qc_sources.items())
+            },
+        },
         "nearest_tss_links": nearest_tss_metrics,
-        "contact_links": contact_metrics,
         "warnings": warnings,
         "pdf_renderer": {"implementation": "WeasyPrint", "version": renderer_version},
         "inputs": {

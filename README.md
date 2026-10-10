@@ -1,32 +1,34 @@
 # Drosophila cCREs
 
-Reproducible ATAC-seq and ChIP-seq processing from public accessions to a
-summit-aware master DHS registry, a context-resolved regulatory-element
-catalog, and enhancer--gene candidate links. The default link branch uses the
-nearest annotated TSS and does not require contact NGS data. An optional,
-explicitly requested branch adds context-specific Micro-C/Hi-C and power-law
-element--promoter evidence for the canonical dm6 atlas.
+Reproducible processing of public ATAC-seq and H3K27ac data from accessions to
+a summit-aware master DHS registry, a context-resolved catalog of candidate
+cis-regulatory elements, and a nearest-TSS annotation of every enhancer-like
+element.
 
-The production path has three phases separated by an explicit manual QC gate:
+The published dm6 atlas covers eight contexts (`ab`, `e13`, `e5`, `ead`, `hid`,
+`lb`, `o`, `wid`) built from 20 ATAC-seq and 14 IP-only H3K27ac biological
+libraries. The complete input is versioned in `resources/`:
 
-1. process reads through library QC and export `pending_review` BAM manifests;
-2. review every library, then construct the master DHS set from accepted ATAC
-   libraries only;
-3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, assign
-   each max3 H3K27ac signal an empirical nonmember-DHS background percentile,
-   call activity above 0.60, then build the default nearest-TSS candidate
-   table; optionally normalize the reviewed contact maps and build
-   contact-supported links.
+| File | Content |
+|---|---|
+| `resources/atlas_samples.tsv` | 35 public accessions (34 biological libraries) |
+| `resources/atlas_qc_decisions.tsv` | Recorded per-library QC decisions and reviewed single-end H3K27ac fragment lengths |
 
-There is no external regulatory-element reference or quantile-normalization
-branch. Strict reuse of a checksummed master-DHS bundle is supported.
+The workflow has three invocations separated by an explicit library-QC gate:
 
-## Quick start
+1. **Reads to QC.** Download, trim, align, filter, call per-library peaks and
+   write a library review table.
+2. **Master DHS registry.** Pool accepted ATAC libraries by context, keep
+   replicate-supported peaks and cluster them into a summit-aware registry.
+3. **Element catalog.** Quantify ATAC and H3K27ac on the registry, call
+   context-specific H3K27ac activity, annotate TSS-distance classes, assign
+   each enhancer-like element to its nearest annotated TSS, and render an
+   integrated QC report.
 
-### Install the environment
+## Installation
 
-Prerequisites are a POSIX shell, Git, and a working `mamba` installation. From
-the repository root, create the orchestration environment inside the project:
+Prerequisites are a POSIX shell, Git and `mamba`. Keep every environment inside
+the repository:
 
 ```bash
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
@@ -35,832 +37,334 @@ export CONDA_ENVS_PATH="$PWD/.micromamba/envs"
 export CONDARC="$PWD/.condarc"
 export XDG_CACHE_HOME="$PWD/.cache"
 mamba env create --prefix "$PWD/.venv" --file environment.yml
-```
-
-Confirm that the launcher is available:
-
-```bash
-mamba run --prefix "$PWD/.venv" python src/run_pipeline.py --help
-```
-
-For the commands below, either activate the environment once:
-
-```bash
 mamba activate "$PWD/.venv"
+python src/run_pipeline.py --help
 ```
 
-or keep using `mamba run --prefix "$PWD/.venv"` for each Python command.
+The local Snakemake profile creates pinned rule environments below
+`.snakemake/conda` on first use, so the first run needs network access.
+Snakemake runs with its local executor, including inside a site-specific
+`sbatch` allocation.
 
-The local Snakemake profile creates the pinned rule environments below
-`.snakemake/conda` on first use. That first run therefore needs network access
-and takes longer than a restart. Keep `.venv`, `.micromamba`, `.cache`, and the
-rule environments inside the repository; do not create project environments
-under a shared home-directory prefix.
+## Reproducing the atlas
 
-The project runs Snakemake with its local executor, including when that command
-is launched inside a site-specific `sbatch` allocation. The orchestration
-environment therefore does not install Snakemake's SLURM executor plugin.
-
-### Prepare and validate the input table
-
-Create a CSV or TSV with `accession`, `library_id`, `assay`, and `context`
-columns. Then validate it before downloading data:
+Validate the input table:
 
 ```bash
-mamba run --prefix "$PWD/.venv" \
-  python src/validate_sample_sheet.py path/to/samples.tsv
+python src/validate_sample_sheet.py resources/atlas_samples.tsv
 ```
 
-The tracked atlas tables under `resources/` are runnable examples. Optional
-control, peak-caller, and processing columns are defined in
-`schemas/sample-sheet.schema.yaml`.
-
-### Run the pipeline
-
-The production path uses three workflow invocations separated by a manual
-review checkpoint. Commands in the remainder of this README assume the
-environment is active. The accession table is the starting input for the
-complete production path, but the required human QC decision means it is not
-run as one uninterrupted command.
-
-1. Start from accessions and stop at `qc`. This downloads reads, prepares the
-   reference, processes every library, and writes the QC review table and a
-   `pending_review` final-BAM manifest.
-2. Record pass/fail decisions in a copy of the review table and create a
-   reviewed manifest with `src/review_final_bam_manifest.py`.
-3. Start from the completed `qc` checkpoint plus the reviewed ATAC manifest
-   and stop at `master`. The lenient replicate peak evidence is reused; only
-   context pooling, support filtering, and master construction run downstream.
-4. Start from `master` with the accepted ATAC/H3K27ac manifests. Stop at
-   `quantification`, `catalog`, `links`, or `report`. The links stage defaults
-   to the contact-independent nearest-TSS branch. Add `--with-contacts` for the
-   complete nine-context dm6 atlas to also download and normalize the
-   versioned contact sources.
-
-Use the same `project` and `run_id` to resume an invocation. Use a new `run_id`
-when scientific parameters or selected libraries change. Before a large run,
-add `--snakemake-dry-run` to inspect the planned jobs. `--cores` limits total
-local/cluster cores; `--jobs` limits concurrent cluster jobs. Complete commands
-for each invocation appear in [Phase 1](#phase-1-master-dhs-construction) and
-[Phase 2](#phase-2-quantification-catalog-and-links).
-
-## Pipeline DAG
-
-The workflow is shown top-to-bottom, with the manual review and immutable
-manifest boundaries separating the three invocations:
-
-![Pipeline DAG showing QC, manual review, master construction, and activity catalog phases](docs/workflow-dag.svg)
-
-The editable graph source is [`docs/workflow-dag.dot`](docs/workflow-dag.dot).
-For the detailed scientific reasoning and equations, see
-[`docs/pipeline-description.pdf`](docs/pipeline-description.pdf).
-
-## Input table
-
-The public input is a CSV or TSV conforming to
-`schemas/sample-sheet.schema.yaml`. Its canonical columns are:
-
-| Column | Meaning |
-|---|---|
-| `accession` | Public run or experiment accession |
-| `library_id` | Biological library; technical runs share an ID |
-| `assay` | `atac`, `h3k27ac`, or another supported ChIP assay |
-| `context` | Tissue, stage, or cell type |
-
-Optional control and MACS3 parameter columns are documented in the schema.
-ATAC peak calling is fixed to the two-ended Tn5/MACS3-qpois method;
-`peak_caller`, when supplied, must be `callpeak`. The two reviewed dm6 atlas
-inputs are `resources/atlas_samples_ip_only.tsv` and
-`resources/atlas_samples_with_inputs.tsv`.
-
-Each distinct ATAC `context` becomes a replicate-pooling group. Consequently,
-the same code can build a master from the nine atlas contexts or any other set
-of contexts present in an input table. The default consensus requires at least
-two biological ATAC libraries per context.
-
-## Logical stages and restart behavior
-
-`--until-stage` selects a reproducible stopping boundary:
-
-| Stage | Completed result |
-|---|---|
-| `trimming` | raw/trimmed FastQC, Cutadapt metrics, trimmed FASTQs |
-| `alignment` | quality-filtered, blacklist-retaining final BAM/BAI, alignment QC, final-BAM manifest |
-| `qc` | peaks, FRiP and assay QC, MultiQC |
-| `master` | replicate-supported context peaks and master DHS bundle/manifest |
-| `quantification` | raw, CPM/kb, background-TMM factors, exact-DHS signals, summit max3 H3K27ac signals, and nonmember-background percentiles |
-| `catalog` | max3 background-percentile activity calls, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
-| `links` | default one-row-per-enhancer nearest-TSS table and promoter activity annotations; optional normalized contacts, decay model, context edges, and contact-ranked genes with `--with-contacts` |
-| `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the links |
-
-Snakemake owns completeness. Re-running the same `project`/`run_id` resumes
-from existing valid outputs and never realigns merely because a later stage is
-requested. Advancing `--until-stage` does not change the scientific semantic
-digest. Incomplete outputs are rebuilt because the profiles retain
-`rerun-incomplete: true`.
-
-Whole-lane alignment is the default. For long runs, opt into restartable
-alignment with `--alignment-chunk-pairs N`, for example
-`--alignment-chunk-pairs 2000000`. The workflow splits each lane into
-deterministic mate-preserving chunks, aligns and verifies every chunk as an
-independent Snakemake job, then merges the coordinate-sorted chunk BAMs before
-technical-lane merging and library-wide duplicate marking. A restart reuses
-completed chunk BAMs and reruns only missing/incomplete chunks. Existing
-verified lane BAMs from an earlier whole-lane invocation are also reused when
-chunking is enabled later in the same run namespace. Chunk size is recorded as
-an execution setting and does not change the scientific semantic digest. The
-local profile limits FASTQ splitting to three concurrent lanes to avoid disk
-thrashing.
-
-`work/<project>/<run_id>/` contains reproducible intermediates rather than
-archive outputs. Large intermediates (trimmed FASTQs after alignment, lane and
-marked BAMs, shifted/short-fragment BAMs, peak-calling insertion BEDs, and
-background-count tables) are declared temporary and Snakemake removes them
-after their last consumer. Quantification assay-unit BEDs are retained below
-`activity/quantification/units/` because catalog restart and mean-track
-construction require exactly those units.
-Keep `work/` while a run is active; after successful completion it may be
-removed to clear any small files or debris left by an interrupted older run.
-Per-library ChIP CPM BigWigs are not generated because no downstream result
-uses them; pooled ATAC pileup/qpois and context-mean catalog BigWigs remain
-distinct, retained final products. Final replicate-level ATAC peak evidence is
-stored below `results/<project>/<run_id>/atac/replicates/`, not under `work/`.
-
-Every endpoint exports
-`provenance/manifests/<stage>.checkpoint.json`. Checkpoint files record the
-scientific semantic digest, stage parameters, paths, and SHA-256 hashes. Each
-one also points to an immutable
-`provenance/configs/<stage>.resolved_config.json` snapshot, so completing a
-later stage does not invalidate an earlier restart boundary.
-Starting at a completed boundary is strict: missing or changed checkpoint
-artifacts cause an error rather than upstream recomputation.
-
-| `--from-stage` | Required artifact | Allowed stopping points |
-|---|---|---|
-| `accessions` | accession table/download manifest | trimming through QC |
-| `trimming` | trimming `--checkpoint-manifest` | trimming, alignment, or QC in the same run namespace |
-| `alignment` | alignment checkpoint or `--final-bam-manifest` | alignment or QC |
-| `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
-| `master` | `--master-manifest`; accepted BAM manifests when continuing | master, quantification, catalog, links, or report |
-| `quantification` | quantification checkpoint | quantification, catalog, links, or report |
-| `catalog` | catalog checkpoint, or `--catalog-manifest` for an immutable external catalog | catalog, links, or report from a checkpoint; links only from a catalog manifest |
-| `links` | links checkpoint | links or report |
-| `report` | report checkpoint | report validation |
-
-`final-bam` remains a compatibility alias for older commands. New commands
-should use `alignment` for BAM-to-QC and `qc` for reviewed QC-to-master reuse.
-
-The workflow automatically exports:
-
-```text
-results/<project>/<run_id>/provenance/manifests/final-bams.tsv
-results/<project>/<run_id>/qc/library-review.tsv
-results/<project>/<run_id>/provenance/manifests/master-dhs.tsv
-results/<project>/<run_id>/provenance/manifests/<stage>.checkpoint.json
-```
-
-Automatically exported new BAMs have `qc_status=pending_review`. The QC endpoint
-also writes a single human-readable row per library to `qc/library-review.tsv`.
-Apply explicit pass/fail decisions with `src/review_final_bam_manifest.py`.
-Master DHS
-construction refuses any `pending_review` ATAC row, excludes documented
-rejections, and records those exclusions in the resolved configuration. Each
-remaining ATAC context must still satisfy `--atac-minimum-replicates`.
-Quantification likewise requires reviewed ATAC and H3K27ac manifests. Rejected
-libraries require a reason. Single-end H3K27ac libraries also require a
-reviewed `estimated_fragment_length_bp`.
-
-## Phase 1: master DHS construction
-
-First process accessions through QC. Omitting `--until-stage` has the same QC
-endpoint in accession mode:
+**1. Accessions to QC.** One mixed table produces one QC namespace per assay,
+`results/drosophila-atlas.atac.dm6/<run>` and
+`results/drosophila-atlas.chip_histone.dm6/<run>`:
 
 ```bash
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+python src/run_pipeline.py resources/atlas_samples.tsv \
   --project drosophila-atlas --run-id qc-v1 --genome dm6 \
   --until-stage qc --cores 16
 ```
 
-For lanes too large to comfortably restart from zero, add
-`--alignment-chunk-pairs 2000000` to this command.
+Add `--alignment-chunk-pairs 2000000` for restartable alignment of very large
+lanes.
 
-This first run:
-
-1. downloads immutable FASTQs with checksums and resume state; after aria2
-   validates an ENA checksum, an atomic `.verified.json` sidecar records the
-   expected checksum and file metadata. A restart skips only unchanged files
-   whose record still matches, and revalidates files with missing or stale
-   records. The default `--backend auto` keeps successful ENA files and
-   converts only ENA-failed runs through SRA Toolkit, while `--backend ena`
-   disables that fallback;
-2. runs lane-level QC/trimming/alignment;
-3. merges technical runs by `library_id`, marks duplicates, and applies MAPQ,
-   alignment-flag, duplicate, and mitochondrial filters while retaining reads
-   that overlap the reference blacklist;
-4. calls replicate peaks and produces FRiP, ATAC TSS/fragment, H3K27ac
-   cross-correlation, and MultiQC outputs;
-5. exports a final-BAM manifest whose new libraries are `pending_review` and a
-   populated `qc/library-review.tsv` for manual review.
-
-The review table contains context and layout, final-BAM depth, proper-pair
-fraction, FRiP, peak count, assay-specific metrics, and paths to MultiQC and
-the per-library plots. ATAC rows include TSS enrichment, fragment-length
-median, and fractions below 150 bp and from 180--250 bp. TSS enrichment is the
-maximum aggregate signal in the central +/-50 bp divided by the mean signal in
-the two terminal 100-bp flanks of the +/-2-kb profile. Histone/ChIP rows include
-phantompeakqualtools fragment-shift estimates, NSC, RSC, and quality tag.
-For paired-end data, FRiP counts one valid same-chromosome fragment per read
-pair in the denominator and one fragment overlapping any called peak in the
-numerator. For single-end data, the corresponding unit is one filtered read.
-
-Newly generated manifests use the `short-read-processing-final-v2` contract.
-Unlike v1, v2 does not remove blacklist-overlapping alignments. The catalog
-instead annotates each master DHS with `blacklist_overlap`,
-`blacklist_overlap_bp`, and `blacklist_overlap_fraction`. A v1 BAM cannot be
-converted into a true v2 BAM because the removed reads cannot be recovered;
-rebuild from the accession/FASTQ phase when adopting this policy.
-Master-bundle manifests also record their input filtering contract, preventing
-an older blacklist-filtered master from being silently combined with v2 BAMs.
-
-Copy the generated table outside the Snakemake result namespace, then edit only
-the final three review columns. Set `qc_decision` to `pass` or `fail`; a failed
-row requires a reason in `notes`. The suggested phantompeakqualtools shift is
-pre-populated as `estimated_fragment_length_bp` for single-end H3K27ac and
-should be reviewed rather than accepted blindly.
+**2. Apply the QC decisions.** The versioned table holds one decision per
+library; `--assay` selects the rows for each per-assay manifest:
 
 ```bash
-mkdir -p data/reviewed
-cp results/<qc-project>/qc-v1/qc/library-review.tsv \
-  data/reviewed/atlas-atac.library-review.tsv
+for assay in atac h3k27ac; do
+  ns=$([ "$assay" = atac ] && echo atac || echo chip_histone)
+  python src/review_final_bam_manifest.py \
+    results/drosophila-atlas.$ns.dm6/qc-v1/provenance/manifests/final-bams.tsv \
+    --review-table resources/atlas_qc_decisions.tsv --assay "$assay" \
+    --output data/reviewed/$assay.reviewed.tsv
+done
 ```
 
-Apply the decisions without editing the generated manifest in place:
+For a new dataset, copy the generated `qc/library-review.tsv`, fill
+`qc_decision` (`pass`/`fail`, a failure needs `notes`) and, for single-end
+H3K27ac, review the pre-filled `estimated_fragment_length_bp`.
+
+**3. Master DHS registry** from the completed QC checkpoint and the reviewed
+ATAC manifest. Strict reuse: nothing is downloaded or realigned.
 
 ```bash
-python src/review_final_bam_manifest.py \
-  results/<qc-project>/qc-v1/provenance/manifests/final-bams.tsv \
-  --review-table data/reviewed/atlas-atac.library-review.tsv \
-  --output data/reviewed/atlas-atac.reviewed.tsv
-```
-
-The command maps `pass` to final-manifest `qc_status=accepted` and `fail` to
-`qc_status=rejected`, verifies that every library has exactly one decision, and
-does not alter the original manifest. The older `--decisions` option and
-`accepted`/`rejected` values remain supported for compatibility.
-
-Then construct the master from the reviewed ATAC manifest. This strict reuse
-mode cannot download FASTQs, trim reads, or align again:
-
-```bash
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+python src/run_pipeline.py resources/atlas_samples.tsv \
   --from-stage qc \
   --checkpoint-manifest \
-    results/<qc-project>/qc-v1/provenance/manifests/qc.checkpoint.json \
-  --final-bam-manifest data/reviewed/atlas-atac.reviewed.tsv \
+    results/drosophila-atlas.atac.dm6/qc-v1/provenance/manifests/qc.checkpoint.json \
+  --final-bam-manifest data/reviewed/atac.reviewed.tsv \
   --project drosophila-atlas --run-id master-v1 --genome dm6 \
   --until-stage master --cores 16
 ```
 
-QC calls the lenient ATAC replicate candidates once with `-q 0.10`, unscaled
-two-ended Tn5 pileup/local lambda, and qpois refinement over exponents 2--325
-with retained components of 50--400 bp. The checkpoint binds those complete
-parameters and checksums the refined replicate BEDs. This second run validates
-and reuses that evidence; it pools accepted libraries within each context,
-calls/refines the pooled context signal, applies replicate support, and builds
-the summit-aware variable-width master registry. A changed peak or refinement
-parameter is rejected rather than silently recomputed under the checkpoint.
-Rejected rows remain in the reviewed manifest and are recorded in
-`provenance.excluded_master_libraries`.
-
-The master is not a simple interval union or fixed-width resize. It preserves
-representative summits, reciprocal-summit clustering, the configured maximum
-summit span, and context membership.
-
-To regenerate QC directly from already filtered BAMs, start at the completed
-alignment boundary. No FASTQ or alignment fallback is available:
+**4. Quantification, catalog, nearest-TSS links and report:**
 
 ```bash
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage alignment \
-  --final-bam-manifest data/reviewed/atlas.pending-review.tsv \
-  --project drosophila-atlas --run-id qc-v1 --genome dm6 \
-  --until-stage qc --cores 16
-```
-
-There is no interactive pause inside Snakemake. The completed QC job and the
-review command form the explicit checkpoint; a separate master invocation is
-required. A master invocation with any pending ATAC decision fails before
-Snakemake starts.
-
-## Phase 2: quantification, catalog, and links
-
-Use the same accession table as metadata, the exported master manifest, and
-one or more reviewed final-BAM manifests:
-
-```bash
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+python src/run_pipeline.py resources/atlas_samples.tsv \
   --from-stage master \
   --master-manifest \
     results/drosophila-atlas/master-v1/provenance/manifests/master-dhs.tsv \
-  --activity-bam-manifest data/reviewed/atlas-atac.accepted.tsv \
-  --activity-bam-manifest data/reviewed/atlas-h3k27ac.accepted.tsv \
-  --report-source-root results/drosophila-atlas/master-v1 \
-  --report-source-root results/drosophila-atlas-h3k27ac/qc-v1 \
+  --activity-bam-manifest data/reviewed/atac.reviewed.tsv \
+  --activity-bam-manifest data/reviewed/h3k27ac.reviewed.tsv \
+  --report-source-root results/drosophila-atlas.atac.dm6/qc-v1 \
+  --report-source-root results/drosophila-atlas.chip_histone.dm6/qc-v1 \
   --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
   --until-stage report --cores 16
 ```
 
-This mode validates hashes and BAM/reference compatibility before computation.
-It cannot download FASTQs or invoke alignment. As written, it produces the
-default nearest-TSS branch and no contact downloads. Add `--with-contacts` to
-this new master-to-report command to include the canonical contact branch.
-That choice is frozen in the resolved configuration: a checkpoint resume
-cannot be used to switch contacts on later. To add contacts to an already
-completed catalog, export its catalog bundle and start a new run ID with
-`--with-contacts` as shown below.
+The H3K27ac activity cutoff defaults to a background percentile of 0.60. Pass
+`--h3k27ac-activity-threshold T` (0 < T < 1) to this command to use another
+value; because it changes the scientific result, it needs a new `--run-id`.
 
-Use `--until-stage quantification` to stop after counting and normalization.
-Continue strictly from its exported checkpoint, using the same sample sheet
-and original result namespace:
+Add `--snakemake-dry-run` to any command to inspect the planned jobs.
+`--cores` limits total cores and `--jobs` concurrent cluster jobs.
 
-```bash
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage quantification \
-  --checkpoint-manifest \
-    results/drosophila-atlas/catalog-v1/provenance/manifests/quantification.checkpoint.json \
-  --until-stage report --cores 16
-```
+## Pipeline DAG
 
-Repeated `--report-source-root` values on the master-boundary command freeze the
-upstream manifests, JSON metrics, TSS profiles, fragment histograms,
-cross-correlation results, and MultiQC locations into the report configuration.
-The master-manifest result root is discovered automatically when possible.
-Report inputs affect only reporting and are excluded from the scientific
-semantic digest.
+![Pipeline DAG showing QC, manual review, master construction and activity catalog phases](docs/workflow-dag.svg)
 
-## Candidate-gene link branches
+The graph source is [`docs/workflow-dag.dot`](docs/workflow-dag.dot). The
+methods, with equations, are in
+[`docs/pipeline-description.pdf`](docs/pipeline-description.pdf).
 
-The `links` stage always builds the contact-independent table
-`activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.tsv.gz`.
-It has exactly one row per catalog element classified
-`proximal_enhancer_like` or `distal_enhancer_like`; it does not require the
-enhancer itself to pass the catalog H3K27ac activity call. The candidate is the
-annotated TSS with minimum absolute distance from the master-DHS summit on the
-same chromosome. All exact distance ties are retained in semicolon-aligned
-fields in that same enhancer row rather than creating duplicate enhancer rows.
+## Input table
 
-Static columns report the enhancer coordinates/class, nearest promoter IDs,
-gene IDs/names, TSS positions/strands, transcript IDs, distance, and tie count.
-For every catalog context, `CONTEXT__...` columns report the enhancer's
-membership, ATAC signal, H3K27ac max3 background percentile, activity state, and combined
-activity. They also report whether any tied nearest promoter is active, which
-tied promoter IDs are active, their supporting master-DHS IDs, and maximum
-promoter activity measurements. The summary columns list all contexts in
-which a tied nearest promoter is active. Here “active promoter” means that a
-context-member master-DHS summit is within inclusive ±500 bp of the exact TSS
-and at least one such DHS has the catalog activity call. Promoter activity
-annotates the distance-selected target; it does not
-change which TSS is nearest.
+The input is a CSV or TSV conforming to `schemas/sample-sheet.schema.yaml`:
 
-The supporting promoter registry and metrics are written beside the table:
+| Column | Meaning |
+|---|---|
+| `accession` | Public run or experiment accession (SRR/SRX/ERR/ERX) |
+| `library_id` | Biological library; technical runs share an ID |
+| `assay` | `atac` or `h3k27ac` |
+| `context` | Tissue or stage |
 
-```text
-activity/links/nearest_tss/promoters.tsv.gz
-activity/links/nearest_tss/promoters.metrics.json
-activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.tsv.gz
-activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.metrics.json
-```
+Rows sharing a `library_id` are technical runs: their lanes are processed
+separately and merged before duplicate marking. Distinct ATAC libraries in one
+`context` are biological replicates and are pooled automatically; each context
+needs at least two. H3K27ac libraries are IP-only: input-control columns are
+rejected and MACS3 estimates its local lambda from the IP. Optional per-row
+processing overrides (adapters, trimming, alignment, MACS3 parameters) are
+documented in the schema; the atlas uses the defaults throughout. The genome
+is the project-level `--genome dm6`.
 
-This default branch works for any supported catalog/reference and considers
-every GTF chromosome represented in the reference chromosome-sizes file. A
-report run includes its counts and
-the number of enhancers whose nearest promoter is active in each context.
+## Method summary
 
-### Optional contact normalization and contact-supported candidates
+### Reads, alignment and library QC
 
-Add `--with-contacts` when creating a new master/quantification-to-links/report
-configuration, or a new catalog-bundle-to-links configuration. This opt-in is
-available only for the complete canonical nine-context dm6 atlas and reads
-`resources/atlas_contact_sources.tsv`. Seven contexts have observed contact
-evidence: `ab`, `e5`, `e11`, `ead`, `lb`, `o`, and `wid`. The `o` evidence is
-Hi-C at 4 kb; the other observed contexts use Micro-C at 5 kb. No defensible
-context-matched map is assigned to `e13` or `hid`, so those two contexts are
-explicitly labeled `powerlaw` and use an atlas-wide distance model fitted from
-the seven observed maps. The atlas exponent is the arithmetic mean of the
-seven fitted exponents and its scale is their geometric mean. For each
-element--promoter pair within 1 Mb, the modeled weight is the expected contact
-at that distance; no observed pixel or observed/expected value is imputed. A
-partial or non-dm6 catalog still receives the default nearest-TSS table but
-cannot opt into this atlas-specific contact mapping.
+- FASTQs are downloaded with checksum verification and resume state, then kept
+  immutable. ENA is used first; only ENA failures fall back to SRA Toolkit.
+- Each lane is trimmed (Cutadapt; Nextera adapters for ATAC, TruSeq for
+  H3K27ac) and aligned with Bowtie 2 (`--very-sensitive`, fragments up to
+  2,000 bp). Technical lanes merge by `library_id` before duplicate marking.
+- Final BAMs remove unmapped, secondary, QC-fail, supplementary, duplicate,
+  MAPQ < 30 and mitochondrial alignments. Reads overlapping the reference
+  blacklist are retained (filtering contract `short-read-processing-final-v2`);
+  blacklist overlap is annotated on elements instead.
+- QC reports FRiP, peak counts, ATAC TSS enrichment and fragment-length
+  distributions, H3K27ac phantompeakqualtools cross-correlation, and MultiQC.
+  Paired-end FRiP counts one valid fragment per read pair; single-end FRiP
+  counts filtered reads. TSS enrichment is the maximum central ±50-bp signal
+  over the mean of the two terminal 100-bp flanks of the ±2-kb profile.
+- H3K27ac QC peaks use MACS3 `callpeak --broad --broad-cutoff 0.1 -q 0.01 -B
+  --SPMR` without `-c`. They are QC evidence only; the catalog is quantified
+  directly from BAM-derived units.
 
-A completed catalog can enter the link stage without revalidating or relabeling
-its historical BAMs. First export a one-row bundle manifest, then start a new
-result namespace from that catalog:
+### Master DHS registry
 
-```bash
-python src/create_catalog_manifest.py \
-  results/drosophila-atlas/catalog-from-reviewed-v1 \
-  --output data/reviewed/atlas-catalog.reviewed.tsv
+- Paired-end ATAC keeps proper pairs with `0 < abs(TLEN) < 150`, applies Tn5
+  offsets and converts both mates to one-base insertions.
+- MACS3 runs on the insertions with `-f BED --nomodel --shift -75 --extsize 150
+  --keep-dup all -B -q 0.10` (no `--SPMR`). Qpois is computed with
+  `macs3 bdgcmp -m qpois` from the unscaled pileup and local lambda.
+- Qpois refinement evaluates exponents 2–325 and keeps 50–400-bp components,
+  so broad components split as the exponent rises. Refined boundaries are not
+  an independent FDR-controlled call.
+- Libraries are pooled by `context`. A context peak is retained when at least
+  two biological libraries cover the configured fraction (0.5) of it.
+- Context peaks are clustered with summits taken from the pooled context
+  signal. A cluster requires reciprocal summit containment, a complete-linkage
+  summit span of at most 150 bp and at most one peak per context. Adjacent
+  clusters whose representative summits are under 50 bp apart merge only when
+  their context sets are disjoint. The registry is not an interval union or a
+  fixed-width resize.
 
-python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage catalog --until-stage links \
-  --catalog-manifest data/reviewed/atlas-catalog.reviewed.tsv \
-  --project drosophila-atlas --run-id contact-links-from-catalog-v1 \
-  --genome dm6 --with-contacts --cores 8 \
-  --snakemake-arg=--resources \
-  --snakemake-arg=mem_mb=16000 \
-  --snakemake-arg=contact_download_slots=2
-```
+### Quantification
 
-The manifest binds the long catalog, catalog metrics, catalog provenance, and
-the source resolved configuration by SHA-256. It also records the exact context
-order and source semantic digest. The supplied accession table must hash to the
-same table recorded by the source catalog. This path consumes the existing
-context rows directly, writes only nearest-TSS and optional contact/link
-products in the new run, and
-does not schedule quantification, catalog reconstruction, BigWigs, or IGV
-sessions. A catalog checkpoint remains the appropriate input when continuing
-inside the original run namespace.
+- Assay units: ATAC one-base insertions (as above); paired-end H3K27ac one
+  fragment per proper pair; single-end H3K27ac reads extended to the reviewed
+  fragment length.
+- TMM factors are estimated separately for ATAC and H3K27ac from raw counts in
+  fixed 10-kb autosomal background bins. Context values are equal-weight means
+  of the normalized biological libraries.
+- ATAC is counted over each exact variable-width DHS. H3K27ac is counted in
+  three clipped, non-overlapping 500-bp windows,
+  `[summit-750, summit-250)`, `[summit-250, summit+250)` and
+  `[summit+250, summit+750)`. The max3 signal is the largest
+  background-TMM-normalized CPM/kb among them (ties: center, left, right).
+- For each context, the max3 signals of blacklist-clear DHSs that are **not**
+  members of that context form the empirical background. Every DHS receives a
+  midrank percentile against it and an upper-tail probability
+  `(1 + #(background >= signal)) / (1 + background_n)`.
 
-Contact files download to `data/raw/contacts/`. For each observed context, the
-workflow selects a stored resolution that exactly divides the target
-resolution, coarsens by summing raw counts when needed, sums replicate count
-matrices, and ICE-balances the merged matrix. The first attempt permits 200
-iterations. A matrix that has not converged is restarted from uniform weights
-with a 2,000-iteration limit, and both attempts are recorded in its metrics.
-The workflow never averages pre-balanced replicates or approximately rebins
-incompatible resolutions. GEO contact downloads use one resumable connection
-because its supplementary-file server rejects parallel range requests. When
-an upstream checksum is published it is checked during the
-resumable download; every downloaded source and normalized matrix receives a
-recorded SHA-256 in the result provenance. Converted and coarsened copies under
-`work/` are removed after the balanced context matrix is written successfully.
-Each GEO file uses one HTTP connection; the optional
-`contact_download_slots` aggregate resource controls how many independent files
-Snakemake downloads concurrently.
+### H3K27ac activity and blacklist flag
 
-The current dm6 GTF supplies one promoter node per distinct gene/TSS, using a
-fixed 1,000-bp promoter window (plus/minus 500 bp around the TSS). In each
-context, promoter activity is summarized from context-member master DHSs whose
-summits are at most 500 bp from that TSS. A promoter is marked active when
-at least one supporting DHS has the catalog activity call. Every context-member element is linked to promoters on the same
-chromosome within 1 Mb. Observed contexts report the ICE-balanced matrix pixel,
-the fitted distance expectation, and observed/expected enrichment. Same-bin
-pairs use the maximum adjacent-bin contact and are labeled
-`adjacent_bin_proxy`, because a matrix diagonal cannot resolve an internal
-element--promoter contact. The two missing contexts report distance-model
-weights only.
+A DHS is active in a context when it is a member of that context and its max3
+background percentile is **strictly greater than** the configured threshold
+(default 0.60). Its `activity_state` is then
+`active_h3k27ac_background_gt_<threshold>`. Non-members are
+`inactive_in_context`; members that do not pass are
+`below_h3k27ac_background_threshold`, or `accessible_no_h3k27ac_signal` when
+their max3 signal is zero.
 
-The decay fit uses the mean of finite balanced diagonal pixels at each sampled
-distance, including valid zero pixels and excluding masked bins. This avoids
-inflating the model by conditioning only on nonzero contacts.
+Blacklist-overlapping DHSs are never removed. They are excluded from the
+background population, but members are tested with the same rule as every
+other element and keep their call. `blacklist_overlap` (1 when any DHS base
+overlaps the reference blacklist), `blacklist_overlap_bp` and
+`blacklist_overlap_fraction` flag them in every catalog table. Filter on
+`blacklist_overlap == 0` for a blacklist-clear set.
 
-The promoter activity score is the maximum of
-`combined_activity × H3K27ac_background_percentile` over individual blacklist-clear promoter-supporting
-DHSs; the two maxima are not taken from different DHSs and multiplied. The edge score is
-`contact_weight × promoter_activity_score`.
-It is a prioritization score, not a calibrated probability or causal claim.
-The element--gene table collapses alternative promoters per gene and reports
-candidate, active-candidate, contact-only, and nearest-gene ranks so users can
-compare the sources of evidence rather than accepting one fixed target call.
-The additional
-`<context>.active_contact_enhancer_gene_candidates.tsv.gz` table is a focused
-projection for observed-contact contexts. It first retains proximal or distal
-enhancer-like DHSs with the catalog H3K27ac activity call, then retains promoter edges whose observed/expected contact is at least
-1, and only then collapses alternative promoters to genes and recomputes the
-within-enhancer ranks. Promoter activity columns are preserved but are not an
-additional selection criterion. The table is header-only for `e13` and `hid`
-because their distance model has no observed/expected measurement. A separate
-downstream rule streams the completed node and promoter-edge tables to create
-this projection. Adding or rebuilding the focused table therefore does not
-download contacts, rebalance matrices, refit decay, or regenerate the
-exhaustive graph.
+### Regulatory classes
 
-Within the optional contact branch, every context also receives the narrower,
-per-context supplementary table
-`<context>.nearest_active_promoter_gene_candidates.tsv.gz`, a
-contact-independent nearest-active-TSS comparison for the same catalog-active
-proximal/distal enhancer-like DHSs. It selects the closest active annotated
-promoter TSS on the same chromosome without a distance cutoff and retains all
-exact distance ties. The output identifies every active master DHS supporting
-the target's fixed promoter window and separately lists the subset classified
-`promoter_associated`. In a catalog built with the current rules, every
-supporting DHS has that class because both definitions use the same inclusive
-500-bp summit distance. The subset is retained as an audit field and can differ
-only for an imported catalog carrying historical class labels. This table uses
-neither observed contacts nor the power-law model. Unlike the default wide
-table, it filters enhancers by the catalog activity call, chooses among active promoters,
-and can contain multiple rows per enhancer when promoter/TSS ties occur.
+Absolute distance from the DHS summit to the nearest annotated TSS:
 
-The two distance-only contexts additionally produce
-`<context>.active_distance_enhancer_gene_candidates.tsv.gz`. This table keeps
-the same enhancer catalog-activity requirement, requires the target promoter to be
-active in that context, and ranks the retained genes by the existing
-`power-law contact weight × promoter activity score`. `is_primary_candidate`
-marks rank 1. Repeated baseline columns report the closest active promoter TSS
-and the closest annotated promoter TSS, including ties, so a nearest-TSS
-assignment can be compared with the activity-weighted ranking. Every row has
-`evidence_type=distance_model_active_promoter`; observed contact and
-observed/expected fields remain blank. Eligible enhancers without an active
-promoter inside the 1-Mb graph window have no row and are counted in the JSON
-metrics sidecar. These files are generated only for `e13` and `hid`, directly
-from their completed node and edge tables.
-
-The edge table is intentionally normalized: coordinates, transcript IDs, and
-element annotations live in the node table rather than being repeated on every
-edge. `source_node_id` and `target_node_id` join the two files.
-
-## Quantification method
-
-Assay units are prepared independently:
-
-- paired-end ATAC retains proper pairs with `0 < abs(TLEN) < 150`, applies the
-  Tn5 shift, and counts one-base insertions over each exact variable-width
-  master DHS;
-- paired-end H3K27ac counts one fragment per proper pair;
-- single-end H3K27ac extends reads using the reviewed fragment length.
-
-The pipeline saves per-library raw counts and CPM/kb. It estimates TMM factors
-separately for ATAC and H3K27ac from raw counts in fixed 10-kb autosomal
-background bins. Context values are equal-weight means of normalized biological
-libraries. The quantification table retains raw, CPM/kb, normalized CPM/kb,
-replicate SD, and `sqrt(ATAC × H3K27ac)` values.
-
-## H3K27ac summit signal and nonmember background
-
-During quantification, H3K27ac is counted for every master DHS in every context
-in three clipped, non-overlapping 500-bp summit windows:
-
-```text
-left:   [summit-750, summit-250)
-center: [summit-250, summit+250)
-right:  [summit+250, summit+750)
-```
-
-The strict DHS-by-context table retains every window's raw count sum and mean,
-CPM, CPM/kb, background-TMM normalized CPM, and normalized CPM/kb. Per-library
-raw window counts are also retained. Replicates are averaged with equal weight
-within context before selecting the maximum normalized density among the three
-500-bp windows. The max3 raw signal and other max3 fields come from that
-normalized-density winning window; ties resolve center, then left, then right.
-
-For each context, `context_membership=0` master DHSs that do not overlap the
-reference blacklist form the empirical H3K27ac background. Every DHS receives
-a midrank percentile and a conservative upper-tail probability
-`(1 + count(background >= signal)) / (1 + background_n)` from the max3
-background-TMM normalized CPM/kb signal. Zero-signal background DHSs are
-included. The table reports the background size, and metrics
-report its zero fraction and q50/q60/q70/q80/q90/q95/q99 values. Quantification
-does not impose an activity cutoff.
-
-## H3K27ac activity call
-
-The catalog stage consumes the frozen quantification table and does not recount
-BAMs or reapply TMM factors. A DHS is active in a context only when it is a
-context member, does not overlap the reference blacklist, and its max3
-background percentile is strictly greater than 0.60. Rows at exactly 0.60 are
-inactive. Every DHS/context row is retained with the continuous percentile,
-upper-tail probability, raw and normalized max3 signals, `h3k27ac_active`, and
-an explicit `activity_state`.
-
-This definition is activity schema version 5 with method
-`summit_max3_background_tmm_v3`. It replaces the centered 1-kb measurement and
-guarded Gaussian-mixture model. Rebuild quantification and catalog outputs in a
-new scientific run namespace when migrating an older run; older catalog
-bundles are not silently reinterpreted.
-
-## Regulatory classes
-
-Distance is measured from the master DHS summit to the nearest reference TSS:
-
-| Class | Summit-to-TSS distance |
+| Class | Distance |
 |---|---:|
-| `promoter_associated` | ≤500 bp |
+| `promoter_associated` | ≤ 500 bp |
 | `proximal_enhancer_like` | 501–1,000 bp |
-| `distal_enhancer_like` | >1,000 bp |
+| `distal_enhancer_like` | > 1,000 bp |
 | `unclassified_no_tss_on_contig` | no TSS on that contig |
 
-These class boundaries are assigned when the regulatory catalog is built.
-Importing an older catalog in links-only mode does not silently relabel its
-elements; rebuild the catalog in a new run namespace to apply the 500-bp
-promoter-associated boundary. Contact promoter nodes are rebuilt from the GTF
-with the current plus/minus-500-bp window. Promoter support is selected directly
-by the inclusive absolute summit-to-TSS distance, not by overlap between the
-original DHS interval and the promoter BED interval.
+Enhancer-like means proximal or distal. Classes describe location,
+accessibility and acetylation; they are not functional validation.
 
-`h3k27ac_max_500_background_percentile` is the midrank empirical percentile of
-the element's max3 signal against blacklist-clear DHSs that do not contribute
-to that context. `h3k27ac_active` is one only for blacklist-clear context
-members strictly above 0.60. Zero-signal members remain in the catalog with
-`activity_state=accessible_no_h3k27ac_signal` when they do not pass that cutoff.
+### Nearest-TSS annotation
 
-The long and wide tables also retain the absolute summit-to-nearest-TSS
-distance and the blacklist overlap annotations. The continuous percentile
-allows downstream analyses to apply more stringent cutoffs without recounting
-the BAMs, while the production activity call remains fixed at greater than
-0.60.
+`links/nearest_tss/enhancer_nearest_tss_candidates_wide.tsv.gz` has exactly one
+row per enhancer-like element, whatever its activity. Each is assigned the
+annotated TSS (one promoter per distinct GTF gene/TSS) with the minimum
+absolute summit distance on the same chromosome; exact ties stay in the same
+row as aligned, semicolon-separated fields. The row carries the element's
+`blacklist_overlap` flag and, per context, its membership, ATAC signal,
+H3K27ac percentile, activity call and state.
 
-When the links stage imports a legacy catalog that predates
-`blacklist_overlap`, it preserves that catalog and assigns a dummy value of
-zero to the link-layer element records. Each context metrics file records this
-as `blacklist_overlap_annotation=legacy_catalog_default_zero`; this value means
-unknown/not annotated, not evidence that the element was checked and cleared.
+Per context, a nearest promoter is active when a blacklist-clear,
+context-member DHS summit within an inclusive ±500 bp of the exact TSS has the
+activity call. Promoter signal and score columns use the same blacklist-clear
+supporting DHSs; the promoter activity score is the maximum of
+`sqrt(ATAC × H3K27ac) × percentile` over those DHSs. Promoter activity
+annotates the assigned TSS; it never changes which TSS is nearest.
 
-For example, this writes context-member, distal candidates with a max3
-background percentile of at least 0.9 and no blacklist overlap while
-discovering columns from the header:
+### Browser tracks
 
-```bash
-gzip -dc results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz |
-awk -F '\t' 'BEGIN {OFS=FS}
-NR==1 {for (i=1; i<=NF; i++) column[$i]=i; print; next}
-$(column["context_membership"]) == 1 &&
-$(column["h3k27ac_max_500_background_percentile"]) != "" &&
-$(column["h3k27ac_max_500_background_percentile"]) >= 0.9 &&
-$(column["nearest_tss_distance_bp"]) > 1000 &&
-$(column["blacklist_overlap"]) == 0' > distal.max3-background-0.9.tsv
-```
+Per context, the catalog writes a DHS BED and a BED9 element track. In the
+element track the thick interval marks the summit, the score is the background
+percentile × 1,000, the colour encodes the TSS class and blacklist-overlapping
+elements are black. The name records class, TSS distance, percentile, activity
+call/state and blacklist status. Mean background-TMM BigWigs use the same TMM
+factors; each ATAC insertion is drawn as a centered 150-bp interval. IGV
+sessions (`igv/<context>.xml`, `all-contexts.igv.xml`) load the master
+registry, both mean tracks, the DHS and the element tracks with relative
+paths.
 
-## Browser tracks and IGV sessions
+## Stages and restart behavior
 
-The catalog stage creates a self-contained visualization bundle for every
-context. The context DHS BED uses the master-DHS coordinates for rows with
-`context_matrix` membership equal to one; it is therefore directly aligned
-with the catalog rather than reproducing the wider upstream pooled-peak
-boundaries. The context-element BED retains every member. It is BED9: the
-thick one-base interval marks the representative summit, the score is the
-max3 background percentile scaled to 0--1,000 (zero when the percentile is not
-available), and item RGB distinguishes the TSS-distance classes. Blacklist
-overlaps are black. The name records the exact TSS distance, percentile,
-activity call/state, and blacklist-overlap status.
+`--until-stage` selects the stopping boundary:
 
-For each assay and context, every accepted library is first scaled by
-`1e6 / effective_library_size` using the same assay-specific background-TMM
-factor as the activity table. For browser display, each shifted one-base ATAC
-insertion is expanded to a centered, chromosome-clipped 150-bp interval before
-coverage is calculated. The context BigWig is the arithmetic mean of those
-scaled library pileups. This is denser than displaying isolated cut sites while
-preserving the insertion-based library definition and the 150-bp representation
-used by MACS3. H3K27ac BigWigs remain mean normalized fragment coverage.
-Temporary per-library bedGraphs are removed; only the context BigWig and its
-JSON sidecar are retained. The resolved activity configuration records
-`atac_browser_extension_bp: 150`, so the representation participates in the
-run's semantic digest.
+| Stage | Completed result |
+|---|---|
+| `trimming` | raw/trimmed FastQC, Cutadapt metrics, trimmed FASTQs |
+| `alignment` | filtered final BAM/BAI, alignment QC, final-BAM manifest |
+| `qc` | peaks, FRiP, assay QC, MultiQC, library review table |
+| `master` | replicate-supported context peaks and the master DHS bundle |
+| `quantification` | raw, CPM/kb and background-TMM signals, max3 H3K27ac signals and background percentiles |
+| `catalog` | activity calls, long/wide/per-context tables, BED/BigWig tracks, IGV sessions |
+| `links` | promoter registry and the wide nearest-TSS enhancer table |
+| `report` | integrated, checksummed HTML/PDF QC report |
 
-Opening `activity/catalog/igv/<context>.xml` loads five relative, portable
-resources: the global master-DHS registry first, followed by the mean ATAC
-150-bp pileup, mean H3K27ac, context DHSs, and activity-scored candidate
-elements. With the genome gene track enabled, the master registry is the first
-custom track immediately below the gene/GTF annotation. Opening
-`activity/catalog/all-contexts.igv.xml` loads the master registry once plus
-those four context-specific tracks for every context, so the complete atlas can
-be compared in one session. Keep the session XML, `bed/`, and `tracks/`
-together under `activity/catalog/` if the catalog is moved.
+Re-running the same `--project`/`--run-id` resumes from valid outputs;
+Snakemake owns completeness and profiles keep `rerun-incomplete: true`.
+Changing selected libraries or any scientific parameter requires a new
+`--run-id`; the resolved configuration's semantic digest guards each run
+namespace.
 
-To combine the pooled ATAC evidence and final regulatory-element annotations in
-one compact session, point the standalone builder at the completed master and
-catalog runs:
+Every endpoint exports `provenance/manifests/<stage>.checkpoint.json` (paths,
+parameters, SHA-256 hashes and the semantic digest) and an immutable
+`provenance/configs/<stage>.resolved_config.json`. Starting from a boundary is
+strict: missing or changed artifacts are an error, never a silent upstream
+recomputation.
+
+| `--from-stage` | Required artifact | Allowed stopping points |
+|---|---|---|
+| `accessions` | accession table | trimming through QC |
+| `trimming` | trimming `--checkpoint-manifest` | trimming, alignment or QC (same run) |
+| `alignment` | alignment checkpoint or `--final-bam-manifest` | alignment or QC |
+| `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
+| `master` | `--master-manifest`; reviewed BAM manifests when continuing | master through report |
+| `quantification` | quantification checkpoint | quantification through report |
+| `catalog` | catalog checkpoint, or `--catalog-manifest` for an exported catalog | catalog through report; links only from a manifest |
+| `links` | links checkpoint | links or report |
+| `report` | report checkpoint | report validation |
+
+New BAMs are exported as `pending_review`. Master construction refuses any
+pending ATAC library and records documented rejections; quantification
+requires reviewed ATAC and H3K27ac manifests. `final-bam` is a compatibility
+alias of `alignment`.
+
+A completed catalog can enter the links stage in a new namespace without
+revalidating its BAMs:
 
 ```bash
-python src/build_igv_session.py results/<project>/<master-run>/atac \
-  --master-bed results/<project>/<master-run>/atac/master/master_dhs.bed \
-  --catalog-bed-root results/<project>/<catalog-run>/activity/catalog/bed \
-  --output results/<project>/igv/pipeline-results.xml --genome dm6
+python src/create_catalog_manifest.py results/drosophila-atlas/catalog-v1 \
+  --output data/reviewed/atlas-catalog.tsv
+python src/run_pipeline.py resources/atlas_samples.tsv \
+  --from-stage catalog --until-stage links \
+  --catalog-manifest data/reviewed/atlas-catalog.tsv \
+  --project drosophila-atlas --run-id links-v1 --genome dm6
 ```
 
-The master registry is the first custom track immediately below IGV's
-gene/GTF annotation. It is followed, for each context, by the background-TMM
-mean 150-bp ATAC Tn5 pileup, pooled ATAC qpois signal, background-TMM mean
-H3K27ac fragment coverage, context DHSs, and activity-scored candidate cCREs.
-The raw pooled MACS3 ATAC pileup is deliberately omitted because it is
-unscaled and depth-dependent; it remains an auditable master-calling output.
-Replicate H3K27ac signal, H3K27ac peaks, and intermediate ATAC candidates are
-also omitted. Both mean tracks are read from the catalog's sibling `tracks/`
-directory; use `--catalog-track-root` only when that directory is elsewhere.
+`work/<project>/<run_id>/` holds reproducible intermediates; large ones are
+temporary and removed after their last consumer. Quantification units are kept
+below `activity/quantification/units/` because catalog restarts need them.
 
 ## Outputs
 
-Master bundle:
-
 ```text
-results/<project>/<run_id>/atac/master/master_dhs.bed
-results/<project>/<run_id>/atac/master/master_dhs_summits.bed
-results/<project>/<run_id>/atac/master/master_dhs_membership.tsv
-results/<project>/<run_id>/atac/master/master_dhs_context_matrix.tsv
-results/<project>/<run_id>/atac/master/master_dhs.json
+results/<project>/<run_id>/
+├── atac/master/                      master_dhs.bed, master_dhs_summits.bed,
+│                                     master_dhs_membership.tsv,
+│                                     master_dhs_context_matrix.tsv, master_dhs.json
+├── activity/quantification/          normalization_factors.tsv, context_signal.tsv.gz,
+│                                     master_dhs_activity.tsv.gz, h3k27ac/master_dhs_signal.tsv.gz,
+│                                     per-library signals, window counts, metrics, provenance
+├── activity/catalog/
+│   ├── master_elements_long.tsv.gz   one row per DHS × context
+│   ├── master_elements_wide.tsv.gz   one row per DHS, context-prefixed columns
+│   ├── elements/<context>.elements.tsv.gz   context members only
+│   ├── regulatory_element_summary.tsv       counts by context/class/blacklist/activity
+│   ├── regulatory_element_metrics.json      definitions, threshold, counts
+│   ├── regulatory_element_provenance.json
+│   ├── bed/  tracks/  igv/  all-contexts.igv.xml
+├── activity/links/nearest_tss/       promoters.tsv.gz, enhancer_nearest_tss_candidates_wide.tsv.gz,
+│                                     and their metrics
+├── activity/report/                  integrated_qc_report.{html,pdf,json}
+└── provenance/                       resolved configs and stage checkpoints
 ```
 
-Quantification:
-
-```text
-results/<project>/<run_id>/activity/quantification/units/*.bed.gz
-results/<project>/<run_id>/activity/quantification/units/*.count.txt
-results/<project>/<run_id>/activity/quantification/libraries/*.signal.tsv.gz
-results/<project>/<run_id>/activity/quantification/tmm_input_counts.tsv.gz
-results/<project>/<run_id>/activity/quantification/normalization_factors.tsv
-results/<project>/<run_id>/activity/quantification/context_signal.tsv.gz
-results/<project>/<run_id>/activity/quantification/master_dhs_activity.tsv.gz
-results/<project>/<run_id>/activity/quantification/activity_metrics.json
-results/<project>/<run_id>/activity/quantification/activity_provenance.json
-results/<project>/<run_id>/activity/quantification/h3k27ac/windows.tsv.gz
-results/<project>/<run_id>/activity/quantification/h3k27ac/windows.bed
-results/<project>/<run_id>/activity/quantification/h3k27ac/libraries/*.window_counts.tsv.gz
-results/<project>/<run_id>/activity/quantification/h3k27ac/master_dhs_signal.tsv.gz
-results/<project>/<run_id>/activity/quantification/h3k27ac/metrics.json
-results/<project>/<run_id>/activity/quantification/h3k27ac/provenance.json
-```
-
-Catalog:
-
-```text
-results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz
-results/<project>/<run_id>/activity/catalog/master_elements_wide.tsv.gz
-results/<project>/<run_id>/activity/catalog/elements/<context>.elements.tsv.gz
-results/<project>/<run_id>/activity/catalog/regulatory_element_summary.tsv
-results/<project>/<run_id>/activity/catalog/regulatory_element_metrics.json
-results/<project>/<run_id>/activity/catalog/regulatory_element_provenance.json
-results/<project>/<run_id>/activity/catalog/bed/master_dhs.bed
-results/<project>/<run_id>/activity/catalog/bed/<context>.dhs.bed
-results/<project>/<run_id>/activity/catalog/bed/<context>.elements.bed
-results/<project>/<run_id>/activity/catalog/bed/bed_tracks.json
-results/<project>/<run_id>/activity/catalog/tracks/<context>.atac.mean.background_tmm.bw
-results/<project>/<run_id>/activity/catalog/tracks/<context>.h3k27ac.mean.background_tmm.bw
-results/<project>/<run_id>/activity/catalog/tracks/<context>.<assay>.mean.background_tmm.json
-results/<project>/<run_id>/activity/catalog/igv/<context>.xml
-results/<project>/<run_id>/activity/catalog/all-contexts.igv.xml
-```
-
-Default nearest-TSS links:
-
-```text
-results/<project>/<run_id>/activity/links/nearest_tss/promoters.tsv.gz
-results/<project>/<run_id>/activity/links/nearest_tss/promoters.metrics.json
-results/<project>/<run_id>/activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.tsv.gz
-results/<project>/<run_id>/activity/links/nearest_tss/enhancer_nearest_tss_candidates_wide.metrics.json
-```
-
-Optional contact links (`--with-contacts`):
-
-```text
-results/<project>/<run_id>/activity/links/contacts/<context>.balanced.cool
-results/<project>/<run_id>/activity/links/contacts/<context>.metrics.json
-results/<project>/<run_id>/activity/links/contacts/dm6_powerlaw.json
-results/<project>/<run_id>/activity/links/promoters.tsv.gz
-results/<project>/<run_id>/activity/links/promoters.metrics.json
-results/<project>/<run_id>/activity/links/contexts/<context>.nodes.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<context>.element_promoter_edges.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<context>.element_gene_candidates.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<context>.active_contact_enhancer_gene_candidates.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<context>.active_contact_enhancer_gene_candidates.metrics.json
-results/<project>/<run_id>/activity/links/contexts/<context>.nearest_active_promoter_gene_candidates.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<context>.nearest_active_promoter_gene_candidates.metrics.json
-results/<project>/<run_id>/activity/links/contexts/<distance-context>.active_distance_enhancer_gene_candidates.tsv.gz
-results/<project>/<run_id>/activity/links/contexts/<distance-context>.active_distance_enhancer_gene_candidates.metrics.json
-results/<project>/<run_id>/activity/links/contexts/<context>.metrics.json
-results/<project>/<run_id>/activity/links/contact_graph_metrics.json
-results/<project>/<run_id>/activity/links/contact_graph_provenance.json
-```
-
-Integrated report:
-
-```text
-results/<project>/<run_id>/activity/report/integrated_qc_report.html
-results/<project>/<run_id>/activity/report/integrated_qc_report.pdf
-results/<project>/<run_id>/activity/report/integrated_qc_report.json
-```
-
-The report includes frozen input and output inventories with checksums, BAM QC
-and FRiP statistics, H3K27ac cross-correlation, ATAC TSS plots, master-registry
-statistics, TMM factors, max3 background-percentile activity by TSS class,
-nearest-TSS candidate/promoter-activity coverage, and—when
-enabled—contact-link coverage by context. The JSON sidecar
-records every report input and output hash.
-
-The long table contains one master-element/context row and reports raw and
-normalized max3 signal, continuous background percentile, activity call/state,
-TSS distance, and blacklist overlap. The wide table contains one row per master
-element with context-prefixed membership, signal, percentile, and activity
-columns plus the shared TSS and blacklist annotations. Each per-context element
-file contains every context member, including below-threshold and zero-signal
-rows. The BED and
-mean-signal sidecars are also explicit report inputs, so their paths and
-checksums appear in the integrated audit trail.
+The catalog tables report raw and normalized max3 signal, the continuous
+background percentile and upper-tail probability, the activity call and state,
+TSS distance and class, and the blacklist annotations, so stricter cutoffs can
+be applied without recounting. The report records every input and output hash
+and matches upstream QC rows to the selected BAMs by checksum.
 
 ## Verification
 
 ```bash
-export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
-export CONDA_PKGS_DIRS="$PWD/.micromamba/pkgs"
-export CONDA_ENVS_PATH="$PWD/.micromamba/envs"
-export CONDARC="$PWD/.condarc"
-export XDG_CACHE_HOME="$PWD/.cache"
-
-mamba run --prefix "$PWD/.venv" pytest -q
-mamba run --prefix "$PWD/.venv" \
-  snakemake --snakefile workflow/Snakefile \
+pytest -q
+snakemake --snakefile workflow/Snakefile \
   --configfile tests/fixtures/workflow_config.yaml --lint
-mamba run --prefix "$PWD/.venv" \
-  snakemake --snakefile workflow/Snakefile \
+snakemake --snakefile workflow/Snakefile \
   --configfile tests/fixtures/workflow_config.yaml --cores 8 --dry-run
 git diff --check
 ```
+
+The loopback aria2 integration test may need socket permission in a sandbox.

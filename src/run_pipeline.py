@@ -46,7 +46,7 @@ def main() -> int:
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA)
     parser.add_argument("--project", default="short-read")
     parser.add_argument("--run-id", default="baseline")
-    parser.add_argument("--genome", choices=("dm6", "hg38"), default="dm6")
+    parser.add_argument("--genome", choices=("dm6",), default="dm6")
     parser.add_argument("--config-dir", type=Path, default=Path("configs"))
     parser.add_argument("--reference-root", type=Path, default=Path("references"))
     parser.add_argument("--snakefile", type=Path, default=REPO_ROOT / "workflow" / "Snakefile")
@@ -86,14 +86,6 @@ def main() -> int:
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--config-only", action="store_true")
     parser.add_argument("--snakemake-dry-run", action="store_true")
-    parser.add_argument(
-        "--with-contacts",
-        action="store_true",
-        help=(
-            "Opt into the canonical dm6 Micro-C/Hi-C/power-law branch. "
-            "Nearest-TSS enhancer candidates are generated without this flag."
-        ),
-    )
     parser.add_argument(
         "--from-stage",
         choices=("accessions", *OUTPUT_STAGES, "final-bam"),
@@ -157,6 +149,16 @@ def main() -> int:
             "should be included in the final report; repeat as needed"
         ),
     )
+    parser.add_argument(
+        "--h3k27ac-activity-threshold",
+        type=float,
+        default=0.60,
+        help=(
+            "H3K27ac activity cutoff: a context-member DHS is active when its "
+            "max3 signal background percentile is strictly greater than this "
+            "value (default 0.60). Changing it requires a new --run-id."
+        ),
+    )
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
     parser.add_argument(
@@ -175,6 +177,8 @@ def main() -> int:
         parser.error("--max-threads must be positive")
     if args.alignment_chunk_pairs is not None and args.alignment_chunk_pairs < 1:
         parser.error("--alignment-chunk-pairs must be positive")
+    if not 0 < args.h3k27ac_activity_threshold < 1:
+        parser.error("--h3k27ac-activity-threshold must be in (0, 1)")
     if args.download_only and args.config_only:
         parser.error("--download-only and --config-only are mutually exclusive")
     try:
@@ -297,17 +301,13 @@ def main() -> int:
         if args.from_stage in {"links", "report"} and not args.checkpoint_manifest:
             parser.error(f"--from-stage {args.from_stage} requires --checkpoint-manifest")
 
-    if args.with_contacts and not (
-        args.catalog_manifest
-        or (
-            args.from_stage in {"master", "quantification"}
-            and not args.checkpoint_manifest
-            and output_stage in {"links", "report"}
-        )
-    ):
+    generates_activity_config = (
+        args.from_stage == "master" and output_stage != "master"
+    ) or (args.from_stage == "quantification" and not args.checkpoint_manifest)
+    if args.h3k27ac_activity_threshold != 0.60 and not generates_activity_config:
         parser.error(
-            "--with-contacts is valid for a new master/quantification-to-links/report "
-            "configuration or a new catalog-bundle-to-links configuration"
+            "--h3k27ac-activity-threshold applies only when a new master or "
+            "quantification run generates the activity configuration"
         )
 
     sample_sheet = args.sample_sheet.resolve()
@@ -379,7 +379,6 @@ def main() -> int:
                 path_base=REPO_ROOT,
                 schema_path=args.schema.resolve(),
                 genome=args.genome,
-                include_contacts=args.with_contacts,
             )
         ]
     elif resume_in_place:
@@ -394,11 +393,7 @@ def main() -> int:
                 alignment_chunk_pairs=args.alignment_chunk_pairs,
             )
         ]
-    elif (
-        args.from_stage == "master" and output_stage != "master"
-    ) or (
-        args.from_stage == "quantification" and not args.checkpoint_manifest
-    ):
+    elif generates_activity_config:
         configs = [
             generate_activity_config(
                 sample_sheet_path=sample_sheet,
@@ -419,7 +414,7 @@ def main() -> int:
                 report_source_roots=[
                     path.resolve() for path in args.report_source_root
                 ],
-                include_contacts=args.with_contacts,
+                h3k27ac_activity_threshold=args.h3k27ac_activity_threshold,
             )
         ]
     else:

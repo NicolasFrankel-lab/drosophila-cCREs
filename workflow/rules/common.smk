@@ -192,27 +192,11 @@ def excluded_flags(wildcards):
     return excluded
 
 
-def peak_control_input(wildcards):
-    control = SAMPLES[wildcards.sample].get("control")
-    return [FINAL_BAMS[control]] if control else []
-
-
-def peak_control_validation_input(wildcards):
-    control = SAMPLES[wildcards.sample].get("control")
-    return (
-        [EXTERNAL_BAM_VALIDATIONS[control]]
-        if control in EXTERNAL_BAM_VALIDATIONS
-        else []
-    )
-
-
 def callpeak_argv(wildcards):
     sample = wildcards.sample
-    control = SAMPLES[sample].get("control")
     arguments = callpeak_arguments(
         SAMPLES[sample]["peak_caller"],
         treatment_bam=Path(FINAL_BAMS[sample]),
-        control_bam=Path(FINAL_BAMS[control]) if control else None,
         name=sample,
         genome_size=REFERENCE["macs3_genome_size"],
         output_dir=Path(f"{RESULT_ROOT}/peaks/{sample}"),

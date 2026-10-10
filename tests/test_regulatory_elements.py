@@ -1,5 +1,6 @@
 import csv
 import gzip
+import json
 import math
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from short_read_processing.regulatory_elements import (
     WINDOW_COUNT_FIELDS,
     WINDOW_FIELDS,
     _is_h3k27ac_active,
+    activity_state_label,
+    validate_activity_threshold,
     _read_blacklist,
     blacklist_overlap,
     build_h3k27ac_quantification,
@@ -28,19 +31,26 @@ from short_read_processing.regulatory_elements import (
 )
 
 
-def test_h3k27ac_activity_uses_strict_060_cutoff_and_excludes_blacklist():
+def test_h3k27ac_activity_uses_strict_default_060_cutoff():
+    assert not _is_h3k27ac_active(member=True, background_percentile=0.60)
+    assert _is_h3k27ac_active(member=True, background_percentile=0.600001)
+    assert not _is_h3k27ac_active(member=False, background_percentile=1.0)
+    assert not _is_h3k27ac_active(member=True, background_percentile=None)
+
+
+def test_h3k27ac_activity_threshold_is_configurable():
     assert not _is_h3k27ac_active(
-        member=True, blacklisted=False, background_percentile=0.60
+        member=True, background_percentile=0.70, threshold=0.70
     )
     assert _is_h3k27ac_active(
-        member=True, blacklisted=False, background_percentile=0.600001
+        member=True, background_percentile=0.71, threshold=0.70
     )
-    assert not _is_h3k27ac_active(
-        member=True, blacklisted=True, background_percentile=1.0
-    )
-    assert not _is_h3k27ac_active(
-        member=False, blacklisted=False, background_percentile=1.0
-    )
+    assert activity_state_label(0.6) == "active_h3k27ac_background_gt_0.60"
+    assert activity_state_label(0.75) == "active_h3k27ac_background_gt_0.75"
+    assert activity_state_label(0.625) == "active_h3k27ac_background_gt_0.625"
+    for invalid in (0, 1, -0.5, float("nan")):
+        with pytest.raises(ValueError, match="must be in"):
+            validate_activity_threshold(invalid)
 
 
 def _master_files(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -323,8 +333,8 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         rows = list(reader)
     second = next(row for row in rows if row["master_dhs_id"] == "DHS0000002")
     assert second["h3k27ac_max_500_window"] == "center_500"
-    assert second["h3k27ac_active"] == "0"
-    assert second["activity_state"] == "excluded_blacklist"
+    assert second["h3k27ac_active"] == "1"
+    assert second["activity_state"] == "active_h3k27ac_background_gt_0.60"
     assert second["blacklist_overlap"] == "1"
     assert second["blacklist_overlap_bp"] == "50"
     assert float(second["blacklist_overlap_fraction"]) == pytest.approx(50 / 101)
@@ -336,6 +346,25 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     ) == pytest.approx(1.0)
     assert float(second["combined_activity_max_500"]) == pytest.approx(
         math.sqrt(9 * 100000)
+    )
+    metrics = json.loads((tmp_path / "metrics.json").read_text())
+    assert metrics["activity_definition"]["threshold"] == 0.60
+    assert metrics["activity_definition"]["background_population"].endswith(
+        "excluding blacklist-overlapping elements"
+    )
+    assert metrics["active_blacklist_overlap_element_count_by_context"] == {"ctx": 1}
+    summary_lines = (tmp_path / "summary.tsv").read_text().splitlines()
+    assert summary_lines[0].split("\t") == [
+        "context",
+        "regulatory_class",
+        "blacklist_overlap",
+        "h3k27ac_active",
+        "activity_state",
+        "element_n",
+    ]
+    assert any(
+        line.split("\t")[2:5] == ["1", "1", "active_h3k27ac_background_gt_0.60"]
+        for line in summary_lines[1:]
     )
     with gzip.open(wide, "rt", newline="") as handle:
         wide_reader = csv.DictReader(handle, delimiter="\t")

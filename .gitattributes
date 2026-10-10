@@ -1,0 +1,2 @@
+# Blank trailing TSV fields are data, not whitespace errors.
+resources/*.tsv -whitespace

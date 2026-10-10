@@ -23,6 +23,7 @@ metrics = build_regulatory_catalog(
     output_summary=Path(str(snakemake.output.summary)),
     output_metrics=Path(str(snakemake.output.metrics)),
     output_provenance=Path(str(snakemake.output.provenance)),
+    activity_threshold=float(snakemake.params.activity_threshold),
 )
 Path(str(snakemake.log[0])).parent.mkdir(parents=True, exist_ok=True)
 Path(str(snakemake.log[0])).write_text(

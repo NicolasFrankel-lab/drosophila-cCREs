@@ -18,15 +18,19 @@ names, or sample relationships.
 
 - The public data input is an accession CSV/TSV conforming to
   `schemas/sample-sheet.schema.yaml`.
-- The canonical user-facing columns are `accession`, `library_id`, `assay`, and
-  `context`. Genome is a project-level CLI value; assay defaults and accession
-  layout are resolved rather than repeated per row.
+- The canonical user-facing columns are `accession`, `library_id`, `assay`
+  (`atac` or `h3k27ac`), and `context`. Genome is the project-level CLI value
+  `dm6`; assay defaults and accession layout are resolved rather than repeated
+  per row.
+- The published atlas input is `resources/atlas_samples.tsv` (eight contexts:
+  ab, e13, e5, ead, hid, lb, o, wid) with per-library QC decisions in
+  `resources/atlas_qc_decisions.tsv`.
 - Users do not provide raw FASTQ paths to the primary entry point.
 - `src/run_pipeline.py` is the canonical accession-to-results command.
 - `workflow/Snakefile` is the canonical processing workflow. Put shared rules
   under `workflow/rules/`; avoid creating parallel experimental Snakefiles for
   production behavior.
-- `dm6` and `hg38` reference preparation belongs in the workflow DAG.
+- `dm6` reference preparation belongs in the workflow DAG.
 - Raw FASTQs are immutable inputs. Never overwrite or modify them in place.
 - Technical runs share a `library_id`, run lane-level QC/alignment separately,
   and merge before biological-library duplicate marking.
@@ -59,39 +63,22 @@ names, or sample relationships.
   this processing DAG. H3K27ac activity uses the maximum background-TMM
   normalized CPM/kb among the three 500-bp summit windows. Its context-specific
   background is blacklist-clear master DHSs that do not contribute to that
-  context, and activity requires a blacklist-clear context member with a
-  midrank background percentile strictly greater than 0.60. The default links branch is contact-independent and
-  assigns each proximal/distal enhancer to its nearest annotated TSS, retaining
-  exact ties in one enhancer row and annotating promoter activity by context.
-  For the canonical nine-context dm6 atlas, contact-map normalization and
-  context-specific element--promoter candidate links are an explicit optional
-  branch selected with `--with-contacts`; ABC candidate resizing/scoring
-  remains outside it.
-- Contact replicates are coarsened only by exact integer count summation and
-  merged as raw counts before ICE balancing. Balancing starts with a
-  200-iteration limit and restarts from uniform weights with a 2,000-iteration
-  limit only if the first attempt does not converge. The seven observed
-  contexts retain assay/match caveats; `e13` and `hid` use an explicitly
-  labeled atlas-wide distance model rather than a substituted contact map.
-- Contact links connect context-member master DHSs to distinct GTF gene/TSS
-  promoters within 1 Mb. Candidate scores combine contact weight with promoter
-  ATAC/H3K27ac activity and are rankings, not calibrated probabilities or
-  causal target assignments. Promoter activity is supported by context-member
-  DHSs whose summits lie within an inclusive 500 bp of the exact TSS; it does
-  not use DHS-boundary overlap with the promoter BED interval. The focused
-  enhancer--gene table retains only
-  proximal/distal enhancer-like elements with the catalog H3K27ac activity call
-  and observed promoter edges with observed/expected contact at least 1 before
-  gene collapse; its distance-modeled contexts are header-only. Distance-only
-  contexts additionally receive a separate active-promoter distance projection
-  whose observed contact and observed/expected fields remain blank.
-  It is derived downstream from completed node/edge tables and must not trigger
-  contact normalization or exhaustive link reconstruction when backfilled.
-- TF ChIP defaults to narrow MACS3 peaks; histone ChIP defaults to broad peaks.
-- ChIP controls are explicit `control_library` relationships. IP-only ChIP is
-  represented by omitting that optional column and runs MACS3 without `-c`.
-- ChIP MACS3 `callpeak` outputs include `-B --SPMR` treatment-pileup and
-  control-lambda bedGraphs. The ATAC qpois branch deliberately omits `--SPMR`.
+  context. A context member is active when its midrank background percentile
+  is strictly greater than the configured threshold (default 0.60,
+  `--h3k27ac-activity-threshold`, recorded in the resolved config and semantic
+  digest).
+- Blacklist-overlapping DHSs are never removed. They are excluded from the
+  activity background only; as context members they are tested with the same
+  rule and flagged by `blacklist_overlap`.
+- The links branch assigns each proximal/distal enhancer to its nearest
+  annotated TSS, retaining exact ties in one enhancer row and annotating
+  promoter activity by context. Promoter activity is supported by
+  blacklist-clear context-member DHSs whose summits lie within an inclusive
+  500 bp of the exact TSS; it does not use DHS-boundary overlap with the
+  promoter BED interval.
+- H3K27ac is IP-only: no input controls, MACS3 broad `callpeak` without `-c`.
+  Its `callpeak` outputs include `-B --SPMR` treatment-pileup and local-lambda
+  bedGraphs. The ATAC qpois branch deliberately omits `--SPMR`.
 - FRiP denominators must be documented and fragment-aware for paired-end data.
 
 If a task changes any invariant, update the schema, validators, tests, README,
@@ -159,8 +146,7 @@ Do not commit:
 - secrets, credentials, private metadata, or large temporary fixtures.
 
 The versioned `resources/` directory is intentionally limited to adapter FASTAs,
-the two canonical ATAC/H3K27ac atlas input tables, and the reviewed contact
-source manifest. Detailed selection/QC metadata belongs in the atlas-analysis
+the atlas accession table, and its per-library QC decision table. Detailed selection/QC metadata belongs in the atlas-analysis
 repository. Do not add random download selections or generated smoke-test data
 here.
 

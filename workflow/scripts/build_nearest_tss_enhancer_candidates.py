@@ -1,4 +1,4 @@
-"""Build the contact-independent wide nearest-TSS enhancer table."""
+"""Build the wide nearest-TSS enhancer table."""
 
 from pathlib import Path
 

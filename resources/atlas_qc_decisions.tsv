@@ -1,0 +1,35 @@
+library_id	assay	context	qc_decision	estimated_fragment_length_bp	notes
+ab_atac_rep1	atac	ab	pass		
+ab_atac_rep2	atac	ab	pass		
+ab_atac_rep3	atac	ab	pass		
+e13_atac_rep1	atac	e13	pass		
+e13_atac_rep2	atac	e13	pass		
+e5_atac_rep1	atac	e5	pass		
+e5_atac_rep2	atac	e5	pass		
+ead_atac_rep2	atac	ead	pass		
+ead_atac_rep3	atac	ead	pass		
+ead_atac_rep4	atac	ead	pass		
+hid_atac_rep1	atac	hid	pass		
+hid_atac_rep2	atac	hid	pass		
+lb_atac_rep1	atac	lb	pass		
+lb_atac_rep2	atac	lb	pass		
+lb_atac_rep3	atac	lb	pass		
+o_atac_rep1	atac	o	pass		
+o_atac_rep2	atac	o	pass		
+o_atac_rep3	atac	o	pass		
+wid_atac_rep1	atac	wid	pass		
+wid_atac_rep2	atac	wid	pass		
+ab_h3k27ac_rep1	h3k27ac	ab	pass	165	
+ab_h3k27ac_rep2	h3k27ac	ab	pass	185	weaker enrichment than ab_h3k27ac_rep1
+e13_h3k27ac_rep1	h3k27ac	e13	pass		
+e13_h3k27ac_rep2	h3k27ac	e13	pass		
+e5_h3k27ac_rep1	h3k27ac	e5	pass		
+e5_h3k27ac_rep2	h3k27ac	e5	pass		
+ead_h3k27ac_rep1	h3k27ac	ead	pass	155	
+hid_h3k27ac_rep1	h3k27ac	hid	pass	225	
+hid_h3k27ac_rep2	h3k27ac	hid	pass	175	
+lb_h3k27ac_rep1	h3k27ac	lb	pass	155	
+lb_h3k27ac_rep2	h3k27ac	lb	pass	160	
+o_h3k27ac_cutrun_rep1	h3k27ac	o	pass		CUT&RUN; protocol differs from the other H3K27ac ChIP-seq libraries
+wid_h3k27ac_gfp2	h3k27ac	wid	pass		
+wid_h3k27ac_gfp3	h3k27ac	wid	pass		

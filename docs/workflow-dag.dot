@@ -11,9 +11,9 @@ digraph workflow {
     style="rounded";
     margin=14;
 
-    inputs [label="Sample sheet\naccession + library + assay + context"];
+    inputs [label="Sample sheet\naccession + library + assay + context\n(ATAC, IP-only H3K27ac)"];
     download [label="Checksummed FASTQ\ndownload"];
-    reference [label="Checksummed dm6/hg38\nreference preparation", fillcolor="#eef6ff"];
+    reference [label="Checksummed dm6\nreference preparation", fillcolor="#eef6ff"];
     trim [label="Raw/trimmed FastQC + Cutadapt\ntrimming checkpoint"];
     align [label="Lane alignment\noptional restartable chunks\n+ library merge and duplicate mark\n+ quality filter; blacklist retained"];
     bammanifest [label="Pending final-BAM\nmanifest", fillcolor="#e5f1ff"];
@@ -39,7 +39,7 @@ digraph workflow {
     style="rounded,dashed";
     margin=14;
 
-    review [label="User records pass/fail\nand fragment length when required", fillcolor="#f8e8f5"];
+    review [label="Recorded pass/fail decisions\n+ single-end fragment lengths\n(resources/atlas_qc_decisions.tsv)", fillcolor="#f8e8f5"];
     reviewedbam [label="Reviewed final-BAM manifest\naccepted + documented rejections", fillcolor="#e5f1ff"];
 
     review -> reviewedbam;
@@ -59,7 +59,7 @@ digraph workflow {
   }
 
   subgraph cluster_activity {
-    label="Invocation 3: accepted BAMs and frozen master to catalog, links, and report";
+    label="Invocation 3: accepted BAMs and frozen master to catalog, nearest-TSS links, and report";
     color="#d9c18c";
     style="rounded";
     margin=14;
@@ -71,17 +71,10 @@ digraph workflow {
     windows [label="Three 500-bp summit windows\nraw H3K27ac fragment counts", fillcolor="#fff4d8"];
     tmm [label="Assay-specific background TMM\nfactors", fillcolor="#fff0c7"];
     quantify [label="Normalized context signals +\nmax3 nonmember-background\npercentiles\nquantification checkpoint", fillcolor="#ffe5a8"];
-    catalog [label="Max3 percentile activity +\nTSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
+    catalog [label="Activity: member percentile > threshold\n(default 0.60); blacklist flagged\nTSS classes; long, wide, context catalogs", fillcolor="#f7e4b2"];
     catalogbundle [label="Checksummed completed catalog\ndownstream restart bundle", shape=note, fillcolor="#f7e4b2"];
     browser [label="Mean TMM ATAC + H3 tracks\nDHS/cCRE IGV bundles", fillcolor="#e1f0f7"];
-    nearestwide [label="Default: one row per enhancer\nnearest annotated TSS ties +\ncontext promoter activity", fillcolor="#dbeedc"];
-    contacts [label="Optional --with-contacts\nversioned dm6 sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
-    normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
-    decay [label="Context contact decay +\natlas-wide power-law model", fillcolor="#d8eeea"];
-    links [label="Optional element--promoter graph +\ncomplete gene candidates", fillcolor="#c7e5df"];
-    focused [label="Catalog-active enhancer + contact O/E filter\nobserved-contact candidates", fillcolor="#b9ddd6"];
-    nearest [label="Supplement: catalog-active enhancer +\nnearest active TSS per context", fillcolor="#dbeedc"];
-    distancefocused [label="Catalog-active enhancer + active promoter\ndistance-ranked candidates\nnearest-TSS baselines", fillcolor="#b9ddd6"];
+    nearestwide [label="One row per enhancer\nnearest annotated TSS ties +\ncontext promoter activity", fillcolor="#dbeedc"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
 
@@ -99,21 +92,12 @@ digraph workflow {
     tmm -> browser;
     catalog -> browser;
     catalog -> nearestwide;
-    contacts -> normalizecontacts -> decay -> links;
-    links -> focused;
-    links -> nearest;
-    links -> distancefocused;
-    catalog -> links;
     catalogbundle -> nearestwide [style=dashed, label="restart"];
-    catalogbundle -> links [style=dashed, label="optional restart"];
     browser -> report;
     nearestwide -> report;
-    focused -> report;
-    nearest -> report;
-    distancefocused -> report;
     sources -> report [style=dashed];
     {rank=same; exact; background; windows;}
-    {rank=same; browser; contacts; sources; catalogbundle;}
+    {rank=same; browser; sources; catalogbundle;}
   }
 
   reviewtable -> review;
@@ -123,5 +107,4 @@ digraph workflow {
   mastermanifest -> validate;
   reference -> validate [style=dashed, constraint=false];
   reference -> nearestwide [style=dashed, constraint=false];
-  reference -> links [style=dashed, constraint=false];
 }

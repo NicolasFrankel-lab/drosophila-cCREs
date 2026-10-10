@@ -1,50 +1,27 @@
 # Pipeline resources
 
-This directory contains reviewed accession and contact-source inputs for the
-dm6 atlas plus the adapter sequences used by the workflow.
+This directory holds the versioned inputs of the eight-context dm6 atlas and
+the adapter sequences used for trimming.
 
 ## Atlas inputs
 
-- `atlas_samples_ip_only.tsv`: minimal four-column pipeline input with 23 ATAC
-  accession rows and 15 H3K27ac IP rows. It contains no input-DNA libraries.
-- `atlas_samples_with_inputs.tsv`: alternative combined input containing the
-  same ATAC selection and 15 H3K27ac IPs, with matched inputs for the two
-  GSE140539 stage-5 IPs and the selected adult-brain IP. Other H3K27ac contexts
-  remain IP-only because no suitable matched input is included.
+- `atlas_samples.tsv`: the pipeline input. Four columns (`accession`,
+  `library_id`, `assay`, `context`) and 35 public accessions forming 34
+  biological libraries: 20 ATAC-seq and 14 IP-only H3K27ac libraries across the
+  contexts `ab`, `e13`, `e5`, `ead`, `hid`, `lb`, `o` and `wid`. `e5_atac_rep1`
+  has two technical runs. `o_h3k27ac_cutrun_rep1` is CUT&RUN; the other
+  H3K27ac libraries are ChIP-seq.
+- `atlas_qc_decisions.tsv`: one QC decision per biological library
+  (`library_id`, `assay`, `context`, `qc_decision`,
+  `estimated_fragment_length_bp`, `notes`). All 34 libraries pass. Single-end
+  H3K27ac rows carry the reviewed fragment length used to extend reads; it is
+  blank for paired-end and ATAC libraries. Apply it to each per-assay QC
+  manifest with `src/review_final_bam_manifest.py --assay`.
 
-These two reviewed tables are the versioned pipeline inputs. Detailed dataset
-selection and QC metadata belong to the separate atlas-analysis repository and
-are not required by this accession-processing workflow.
-
-The workflow writes generated final-BAM, master-bundle, and stage-checkpoint
-manifests below `results/<project>/<run_id>/provenance/manifests/`. Human-edited
-review tables and the accepted/rejected final-BAM manifests derived from them
-belong below the ignored `data/reviewed/` namespace. Neither kind belongs in
-this versioned resource directory.
-
-Both tables use the default two-ended Tn5/MACS3-qpois ATAC branch. The
-with-inputs table deliberately substitutes the matched GSE140539 stage-5
-H3K27ac IPs for the IP-only PRJEB37091 stage-5 pair; it is an alternative
-scientific selection, not merely the IP-only table plus control rows.
-The encoded matched pairs are GSE140539 stage-5 IP/input runs
-`SRR10485675/SRR10485676` and `SRR10485677/SRR10485678`, plus adult-brain
-`SRR5319052/SRR5319047`.
-
-## Contact sources
-
-`atlas_contact_sources.tsv` is the versioned source manifest for the contact
-link stage. It contains the primary GEO download URL, format, replicate label,
-target atlas context, biological match description, and caveat for each matrix.
-The seven observed contexts are `ab`, `e5`, `e11`, `ead`, `lb`, `o`, and `wid`;
-`e13` and `hid` are intentionally absent because the workflow models them by
-distance. The table conforms to `schemas/contact-sources.schema.yaml`.
-
-The source repositories do not publish a checksum for every supplementary
-matrix, so blank checksum cells are explicit rather than invented. The
-workflow checks any checksum present, preserves aria2 resume state, and records
-the computed SHA-256 of every downloaded source and normalized output. Raw
-matrices are downloaded below the ignored `data/raw/contacts/` namespace and
-are never committed.
+Detailed dataset selection and QC evidence belong to the separate
+atlas-analysis repository. The workflow writes its generated manifests below
+`results/<project>/<run_id>/provenance/manifests/`; reviewed manifests derived
+from the decision table belong below the ignored `data/reviewed/` namespace.
 
 ## Adapter sequences
 

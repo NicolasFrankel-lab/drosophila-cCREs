@@ -30,7 +30,7 @@ def user_tracks(root):
 def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path):
     atac = tmp_path / "atac"
     catalog = tmp_path / "catalog"
-    contexts = ["e11", "e5"]
+    contexts = ["e13", "e5"]
     paths = [atac / "master/master_dhs.bed"]
     for context in contexts:
         paths.extend(
@@ -66,11 +66,11 @@ def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path)
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
         "Master DHS registry",
-        "E11 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
-        "E11 | pooled ATAC qpois signal",
-        "E11 | mean H3K27ac signal (background-TMM)",
-        "E11 | context DHSs",
-        "E11 | candidate cCREs (activity-scored)",
+        "E13 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
+        "E13 | pooled ATAC qpois signal",
+        "E13 | mean H3K27ac signal (background-TMM)",
+        "E13 | context DHSs",
+        "E13 | candidate cCREs (activity-scored)",
         "E5 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "E5 | pooled ATAC qpois signal",
         "E5 | mean H3K27ac signal (background-TMM)",
@@ -87,8 +87,8 @@ def test_session_requires_matching_atac_and_catalog_contexts(tmp_path: Path):
             atac / "master/master_dhs.bed",
             condition / "tracks/e5.MACS3-pileup.unscaled.bw",
             condition / "tracks/e5.qpois.bw",
-            tmp_path / "catalog/bed/e11.dhs.bed",
-            tmp_path / "catalog/bed/e11.elements.bed",
+            tmp_path / "catalog/bed/e13.dhs.bed",
+            tmp_path / "catalog/bed/e13.elements.bed",
         ]
     )
     output = tmp_path / "session.xml"

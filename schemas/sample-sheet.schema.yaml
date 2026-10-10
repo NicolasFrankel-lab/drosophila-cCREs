@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 name: short-read-processing sample sheet
 row_model: One row is one public run or experiment accession. Rows with the same library_id are technical runs of one biological library.
 formats:
@@ -23,29 +23,18 @@ fields:
     description: Biological library ID. Technical runs align separately, then merge before duplicate marking.
   assay:
     type: enum
-    values: [atac, h3k27ac, chip_tf, chip_histone]
-    description: Use h3k27ac for histone H3K27ac ChIP-seq; chip_histone remains an accepted alias.
+    values: [atac, h3k27ac]
+    description: ATAC-seq or IP-only H3K27ac ChIP-seq/CUT&RUN. H3K27ac rows are processed internally as chip_histone.
   context:
     type: string
     pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
     description: Tissue, stage, or cell-type ID. Distinct ATAC libraries in one context are biological replicates.
-  role:
-    type: enum
-    values: [treatment, control]
-    allow_blank: true
-    default: treatment
-  control_library:
-    type: string
-    pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
-    allow_blank: true
-    description: Optional library_id of the matched ChIP input; blank for IP-only ChIP, ATAC, and control rows.
   peak_caller:
     type: enum
     values: [callpeak]
     allow_blank: true
     defaults_by_assay:
       atac: callpeak
-      chip_tf: callpeak
       chip_histone: callpeak
 
   macs3_format:
@@ -60,14 +49,12 @@ fields:
     allow_blank: true
     defaults_by_assay:
       atac: 0.10
-      chip_tf: 0.01
       chip_histone: 0.01
   macs3_broad:
     type: boolean
     allow_blank: true
     defaults_by_assay:
       atac: false
-      chip_tf: false
       chip_histone: true
   macs3_broad_cutoff:
     type: number
@@ -80,7 +67,6 @@ fields:
     allow_blank: true
     defaults_by_assay:
       atac: true
-      chip_tf: false
       chip_histone: false
   macs3_shift:
     type: integer
@@ -100,7 +86,6 @@ fields:
     allow_blank: true
     defaults_by_assay:
       atac: nextera
-      chip_tf: truseq
       chip_histone: truseq
   adapter_fasta:
     type: string
@@ -146,13 +131,11 @@ fields:
 
 cross_field_rules:
   - Each accession must appear exactly once in the sheet.
-  - Rows sharing library_id are technical runs and must have identical context, assay, role, control_library, and processing fields.
+  - Rows sharing library_id are technical runs and must have identical context, assay, and processing fields.
   - Distinct ATAC library_id values in one context are biological replicates and are pooled automatically.
-  - ATAC rows must have role=treatment and a blank control_library.
-  - A nonblank ChIP treatment control_library must name an existing role=control library_id in the same context and assay.
-  - ChIP control rows must have a blank control_library.
+  - H3K27ac rows are IP-only; MACS3 estimates local lambda from the treatment without an input control.
   - ATAC callpeak always uses a two-ended Tn5 insertion BED, unscaled MACS3 pileup/local lambda, and qpois refinement.
-  - ChIP macs3_shift or macs3_extsize requires macs3_format=BAM and resolves macs3_nomodel=true.
+  - H3K27ac macs3_shift or macs3_extsize requires macs3_format=BAM and resolves macs3_nomodel=true.
 resolved_chip_callpeak_outputs:
   flags: [-B, --SPMR]
   treatment_bedgraph: '{library_id}_treat_pileup.bdg'

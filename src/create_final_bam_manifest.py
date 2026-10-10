@@ -48,10 +48,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sample_sheet", type=Path)
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA)
-    parser.add_argument("--assay", required=True, choices=("atac", "h3k27ac", "chip_tf", "chip_histone"))
+    parser.add_argument("--assay", required=True, choices=("atac", "h3k27ac", "chip_histone"))
     parser.add_argument("--bam-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--genome", required=True, choices=("dm6", "hg38"))
+    parser.add_argument("--genome", required=True, choices=("dm6",))
     parser.add_argument("--layout", required=True, choices=("single", "paired"))
     parser.add_argument(
         "--qc-status",

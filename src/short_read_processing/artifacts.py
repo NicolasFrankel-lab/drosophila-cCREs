@@ -132,11 +132,11 @@ def read_final_bam_manifest(
                 f"Final-BAM manifest library_id {library_id!r} occurs more than once"
             )
         assay = ASSAY_ALIASES.get(raw["assay"], raw["assay"])
-        if assay not in {"atac", "chip_tf", "chip_histone"}:
+        if assay not in {"atac", "chip_histone"}:
             raise AcquisitionError(f"assay on line {line} is invalid: {raw['assay']!r}")
         context = _safe_id(raw["context"], field="context", line=line)
         role = raw["role"]
-        if role not in {"treatment", "control"}:
+        if role != "treatment":
             raise AcquisitionError(f"role on line {line} is invalid: {role!r}")
         layout = raw["layout"]
         if layout not in {"single", "paired"}:

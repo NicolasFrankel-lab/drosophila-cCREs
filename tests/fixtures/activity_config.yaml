@@ -17,7 +17,7 @@ reference:
   macs3_genome_size: 20000
 samples: []
 activity:
-  schema_version: 5
+  schema_version: 6
   master:
     genome: dm6
     method: reciprocal_summit_complete_linkage_v2

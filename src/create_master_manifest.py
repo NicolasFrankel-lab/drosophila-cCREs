@@ -52,7 +52,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("master_dir", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--genome", required=True, choices=("dm6", "hg38"))
+    parser.add_argument("--genome", required=True, choices=("dm6",))
     parser.add_argument("--method", required=True)
     parser.add_argument("--source-project", required=True)
     parser.add_argument("--source-run-id", required=True)

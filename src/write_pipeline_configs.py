@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("configs"))
     parser.add_argument("--project", default="short-read")
     parser.add_argument("--run-id", default="baseline")
-    parser.add_argument("--genome", choices=("dm6", "hg38"), default="dm6")
+    parser.add_argument("--genome", choices=("dm6",), default="dm6")
     parser.add_argument("--reference-root", type=Path, default=Path("references"))
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)

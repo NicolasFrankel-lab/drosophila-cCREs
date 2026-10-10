@@ -1,4 +1,4 @@
-"""Accession-resolved ATAC-seq and ChIP-seq processing workflow."""
+"""Accession-resolved ATAC-seq and H3K27ac processing workflow."""
 
 import json
 import sys
@@ -16,7 +16,6 @@ from short_read_processing.activity_tmm import (
     TMM_BACKGROUND_METHOD,
 )
 from short_read_processing.workflow_config import (
-    aria2_checksum,
     guard_result_namespace,
     named_artifacts,
     resolve_input_paths,
@@ -24,7 +23,6 @@ from short_read_processing.workflow_config import (
     validate_workflow_config,
     wildcard_regex,
 )
-from short_read_processing.contact_metadata import read_contact_source_manifest
 
 
 if not config:
@@ -62,10 +60,7 @@ EXTERNAL_QC_PEAK_SAMPLES = [
     sample for sample in SAMPLE_IDS if "qc_peak" in SAMPLES[sample]
 ]
 TREATMENTS = [sample for sample in SAMPLE_IDS if SAMPLES[sample]["role"] == "treatment"]
-CHIP_TREATMENTS = TREATMENTS if ASSAY.startswith("chip") else []
-CHIP_CONTROLLED_TREATMENTS = [
-    sample for sample in CHIP_TREATMENTS if SAMPLES[sample].get("control")
-]
+CHIP_TREATMENTS = TREATMENTS if ASSAY == "chip_histone" else []
 ATAC_SAMPLES = TREATMENTS if ASSAY == "atac" else []
 ATAC_QPOIS_SAMPLES = list(ATAC_SAMPLES)
 ATAC_QPOIS_PE_SAMPLES = [
@@ -129,7 +124,6 @@ ATAC_QPOIS_PE_RE = wildcard_regex(ATAC_QPOIS_PE_SAMPLES)
 ATAC_CONDITION_RE = wildcard_regex(ATAC_CONDITION_IDS)
 ATAC_QPOIS_CONDITION_RE = wildcard_regex(ATAC_QPOIS_CONDITIONS)
 CHIP_TREATMENT_RE = wildcard_regex(CHIP_TREATMENTS)
-CHIP_CONTROLLED_TREATMENT_RE = wildcard_regex(CHIP_CONTROLLED_TREATMENTS)
 
 LANES = {}
 RAW_FASTQ_BY_UNIT = {}
@@ -718,177 +712,8 @@ NEAREST_TSS_LINK_TARGETS = (
     else []
 )
 
-CONTACTS = config.get("contacts")
-CONTACT_SOURCE_MANIFEST = str(CONTACTS["source_manifest"]) if CONTACTS else ""
-CONTACT_SOURCE_ROWS = (
-    read_contact_source_manifest(Path(CONTACT_SOURCE_MANIFEST))
-    if CONTACTS
-    else []
-)
-CONTACT_SOURCE_BY_ID = {
-    row["source_id"]: row for row in CONTACT_SOURCE_ROWS
-}
-CONTACT_SOURCE_IDS_BY_FORMAT = {
-    file_format: [
-        row["source_id"]
-        for row in CONTACT_SOURCE_ROWS
-        if row["format"] == file_format
-    ]
-    for file_format in ("mcool", "cool.gz", "h5")
-}
-CONTACT_SOURCE_ROWS_BY_CONTEXT = {
-    context: [row for row in CONTACT_SOURCE_ROWS if row["context"] == context]
-    for context in ACTIVITY_CONTEXTS
-}
-CONTACT_DOWNLOAD_CHECKSUM_ARGUMENTS = {
-    source_id: (
-        f"--checksum={aria2_checksum(source)}"
-        if source["checksum"]
-        else ""
-    )
-    for source_id, source in CONTACT_SOURCE_BY_ID.items()
-}
-CONTACT_CONTEXTS = (
-    [str(row["id"]) for row in CONTACTS["contexts"]]
-    if CONTACTS
-    else []
-)
-CONTACT_CONTEXT_BY_ID = (
-    {str(row["id"]): row for row in CONTACTS["contexts"]}
-    if CONTACTS
-    else {}
-)
-CONTACT_OBSERVED_CONTEXTS = [
-    context
-    for context in CONTACT_CONTEXTS
-    if CONTACT_CONTEXT_BY_ID[context]["strategy"] == "observed"
-]
-CONTACT_POWERLAW_CONTEXTS = [
-    context
-    for context in CONTACT_CONTEXTS
-    if CONTACT_CONTEXT_BY_ID[context]["strategy"] == "powerlaw"
-]
-CONTACT_LINK_ROOT = f"{ACTIVITY_ROOT}/links"
-CONTACT_NORMALIZED_ROOT = f"{CONTACT_LINK_ROOT}/contacts"
-CONTACT_WORK_ROOT = f"{ACTIVITY_WORK}/contacts"
-CONTACT_NORMALIZED = {
-    context: f"{CONTACT_NORMALIZED_ROOT}/{context}.balanced.cool"
-    for context in CONTACT_OBSERVED_CONTEXTS
-}
-CONTACT_NORMALIZED_METRICS = {
-    context: f"{CONTACT_NORMALIZED_ROOT}/{context}.metrics.json"
-    for context in CONTACT_OBSERVED_CONTEXTS
-}
-CONTACT_POWERLAW = f"{CONTACT_NORMALIZED_ROOT}/dm6_powerlaw.json"
-CONTACT_PROMOTERS = f"{CONTACT_LINK_ROOT}/promoters.tsv.gz"
-CONTACT_PROMOTER_METRICS = f"{CONTACT_LINK_ROOT}/promoters.metrics.json"
-CONTACT_LINK_CONTEXT_NODES = {
-    context: f"{CONTACT_LINK_ROOT}/contexts/{context}.nodes.tsv.gz"
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_EDGES = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/{context}.element_promoter_edges.tsv.gz"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_GENES = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/{context}.element_gene_candidates.tsv.gz"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.active_contact_enhancer_gene_candidates.tsv.gz"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.active_contact_enhancer_gene_candidates.metrics.json"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.nearest_active_promoter_gene_candidates.tsv.gz"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.nearest_active_promoter_gene_candidates.metrics.json"
-    )
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.active_distance_enhancer_gene_candidates.tsv.gz"
-    )
-    for context in CONTACT_POWERLAW_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS = {
-    context: (
-        f"{CONTACT_LINK_ROOT}/contexts/"
-        f"{context}.active_distance_enhancer_gene_candidates.metrics.json"
-    )
-    for context in CONTACT_POWERLAW_CONTEXTS
-}
-CONTACT_LINK_CONTEXT_METRICS = {
-    context: f"{CONTACT_LINK_ROOT}/contexts/{context}.metrics.json"
-    for context in CONTACT_CONTEXTS
-}
-CONTACT_LINK_METRICS = f"{CONTACT_LINK_ROOT}/contact_graph_metrics.json"
-CONTACT_LINK_PROVENANCE = f"{CONTACT_LINK_ROOT}/contact_graph_provenance.json"
-CONTACT_LINK_TARGETS = (
-    NEAREST_TSS_LINK_TARGETS
-    + list(CONTACT_NORMALIZED.values())
-    + list(CONTACT_NORMALIZED_METRICS.values())
-    + [
-        CONTACT_POWERLAW,
-        CONTACT_PROMOTERS,
-        CONTACT_PROMOTER_METRICS,
-        *CONTACT_LINK_CONTEXT_NODES.values(),
-        *CONTACT_LINK_CONTEXT_EDGES.values(),
-        *CONTACT_LINK_CONTEXT_GENES.values(),
-        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
-        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
-        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES.values(),
-        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS.values(),
-        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
-        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
-        *CONTACT_LINK_CONTEXT_METRICS.values(),
-        CONTACT_LINK_METRICS,
-        CONTACT_LINK_PROVENANCE,
-    ]
-    if CONTACTS
-    else NEAREST_TSS_LINK_TARGETS
-)
-
-CALLPEAK_NARROW = [
-    sample
-    for sample in CHIP_TREATMENTS
-    if not SAMPLES[sample]["peak_caller"]["broad"]
-]
-CALLPEAK_BROAD = [
-    sample
-    for sample in CHIP_TREATMENTS
-    if SAMPLES[sample]["peak_caller"]["broad"]
-]
-CALLPEAK_NARROW_RE = wildcard_regex(CALLPEAK_NARROW)
-CALLPEAK_BROAD_RE = wildcard_regex(CALLPEAK_BROAD)
 CHIP_PEAKS = {
-    sample: (
-        f"{RESULT_ROOT}/peaks/{sample}/{sample}_peaks.broadPeak"
-        if sample in CALLPEAK_BROAD
-        else f"{RESULT_ROOT}/peaks/{sample}/{sample}_peaks.narrowPeak"
-    )
+    sample: f"{RESULT_ROOT}/peaks/{sample}/{sample}_peaks.broadPeak"
     for sample in CHIP_TREATMENTS
 }
 PEAKS = {
@@ -926,10 +751,6 @@ TSS_PROFILE_TABLES = {
 }
 FRAGMENT_HISTOGRAMS = {
     sample: f"{RESULT_ROOT}/qc/fragments/{sample}.histogram.tsv" for sample in ATAC_SAMPLES
-}
-FINGERPRINTS = {
-    sample: f"{RESULT_ROOT}/qc/chip/{sample}.fingerprint.png"
-    for sample in CHIP_CONTROLLED_TREATMENTS
 }
 CROSSCORRELATION = {
     sample: f"{RESULT_ROOT}/qc/chip/{sample}.cross_correlation.txt"
@@ -995,7 +816,6 @@ QC_TARGETS = (
     + list(FRIP_TSV.values())
     + list(TSS_PLOTS.values())
     + list(FRAGMENT_HISTOGRAMS.values())
-    + list(FINGERPRINTS.values())
     + list(CROSSCORRELATION.values())
     + [METRICS_TSV, METRICS_JSON, MULTIQC_REPORT]
     + ([LIBRARY_QC_REVIEW] if LIBRARY_QC_REVIEW else [])
@@ -1118,7 +938,6 @@ STAGE_CHECKPOINT_ARTIFACTS = {
                 *TSS_PLOTS.values(),
                 *TSS_PROFILE_TABLES.values(),
                 *FRAGMENT_HISTOGRAMS.values(),
-                *FINGERPRINTS.values(),
                 *CROSSCORRELATION.values(),
                 *CROSSCORRELATION_PLOTS.values(),
             ],
@@ -1186,30 +1005,6 @@ STAGE_CHECKPOINT_ARTIFACTS = {
                 NEAREST_TSS_PROMOTER_METRICS,
                 NEAREST_TSS_ENHANCER_CANDIDATES,
                 NEAREST_TSS_ENHANCER_METRICS,
-                *(
-                    [
-                        CONTACT_SOURCE_MANIFEST,
-                        *CONTACT_NORMALIZED.values(),
-                        *CONTACT_NORMALIZED_METRICS.values(),
-                        CONTACT_POWERLAW,
-                        CONTACT_PROMOTERS,
-                        CONTACT_PROMOTER_METRICS,
-                        *CONTACT_LINK_CONTEXT_NODES.values(),
-                        *CONTACT_LINK_CONTEXT_EDGES.values(),
-                        *CONTACT_LINK_CONTEXT_GENES.values(),
-                        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
-                        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
-                        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES.values(),
-                        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS.values(),
-                        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
-                        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
-                        *CONTACT_LINK_CONTEXT_METRICS.values(),
-                        CONTACT_LINK_METRICS,
-                        CONTACT_LINK_PROVENANCE,
-                    ]
-                    if CONTACTS
-                    else []
-                ),
             ],
             "link_artifact",
         ),
@@ -1226,7 +1021,6 @@ STAGE_CHECKPOINT_PARAMETERS = {
     "atac_qpois": config.get("atac_qpois"),
     "catalog_import": CATALOG_IMPORT,
     "nearest_tss_links": NEAREST_TSS_LINKS,
-    "contacts": CONTACTS,
     "peak_callers": {
         sample: SAMPLES[sample]["peak_caller"]
         for sample in TREATMENTS
@@ -1237,7 +1031,7 @@ STANDARD_FINAL_TARGETS = MASTER_TARGETS
 if OUTPUT_STAGE == "report":
     FINAL_TARGETS = (
         ACTIVITY_REPORT_TARGETS
-        + (CONTACT_LINK_TARGETS if START_STAGE != "report" else [])
+        + (NEAREST_TSS_LINK_TARGETS if START_STAGE != "report" else [])
         + (
             [STAGE_CHECKPOINT_MANIFESTS["links"]]
             if START_STAGE != "report"
@@ -1245,7 +1039,7 @@ if OUTPUT_STAGE == "report":
         )
     )
 elif OUTPUT_STAGE == "links":
-    FINAL_TARGETS = CONTACT_LINK_TARGETS
+    FINAL_TARGETS = NEAREST_TSS_LINK_TARGETS
 elif OUTPUT_STAGE == "catalog":
     FINAL_TARGETS = ACTIVITY_CATALOG_TARGETS
 elif OUTPUT_STAGE == "quantification":
@@ -1288,5 +1082,4 @@ include: "rules/atac_peaks.smk"
 include: "rules/atac_consensus.smk"
 include: "rules/activity.smk"
 include: "rules/links.smk"
-include: "rules/contacts.smk"
 include: "rules/qc.smk"

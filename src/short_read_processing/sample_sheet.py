@@ -143,6 +143,10 @@ def _resolve_defaults(row: dict[str, Any], schema: dict[str, Any], *, line: int)
             row[name] = fields[name]["defaults_by_assay"].get(assay)
         if row.get(name) is None and "default" in fields[name]:
             row[name] = fields[name]["default"]
+    if assay == "chip_histone" and not row["macs3_broad"]:
+        raise AcquisitionError(
+            f"Line {line}: H3K27ac peaks are called with macs3_broad=true"
+        )
     if not row["macs3_broad"]:
         if "macs3_broad_cutoff" in supplied:
             raise AcquisitionError(
@@ -152,7 +156,7 @@ def _resolve_defaults(row: dict[str, Any], schema: dict[str, Any], *, line: int)
     if row["macs3_shift"] is not None or row["macs3_extsize"] is not None:
         if assay != "atac" and row["macs3_format"] != "BAM":
             raise AcquisitionError(
-                f"Line {line}: ChIP macs3_shift/extsize requires macs3_format=BAM"
+                f"Line {line}: H3K27ac macs3_shift/extsize requires macs3_format=BAM"
             )
         if row["macs3_extsize"] is None:
             raise AcquisitionError(f"Line {line}: macs3_shift requires macs3_extsize")
@@ -196,34 +200,6 @@ def _validate_relationships(rows: list[dict[str, Any]], canonical_fields: set[st
                     + ", ".join(mismatches)
                 )
 
-    role_by_library = {
-        library_id: str(items[0]["role"]) for library_id, items in by_library.items()
-    }
-    for row in rows:
-        assay = str(row["assay"])
-        role = str(row["role"])
-        control_library = row.get("control_library")
-        line = row["__line__"]
-        if assay == "atac" and (role != "treatment" or control_library):
-            raise AcquisitionError(
-                f"Line {line}: ATAC rows must have role=treatment and blank control_library"
-            )
-        if assay.startswith("chip") and role == "control" and control_library:
-            raise AcquisitionError(
-                f"Line {line}: ChIP control rows must have blank control_library"
-            )
-        if assay.startswith("chip") and role == "treatment" and control_library:
-            if role_by_library.get(str(control_library)) != "control":
-                raise AcquisitionError(
-                    f"Line {line}: control_library {control_library!r} does not name "
-                    "a control library"
-                )
-            control = by_library[str(control_library)][0]
-            if control["assay"] != assay or control["context"] != row["context"]:
-                raise AcquisitionError(
-                    f"Line {line}: treatment and control must have the same assay and context"
-                )
-
 
 def read_sample_sheet(
     path: Path,
@@ -241,6 +217,13 @@ def read_sample_sheet(
         )
     if not raw_rows:
         raise AcquisitionError(f"Sample sheet {path} has no data rows")
+    unsupported = [name for name in ("role", "control_library") if name in fieldnames]
+    if unsupported:
+        raise AcquisitionError(
+            f"Sample sheet {path} uses unsupported columns: "
+            + ", ".join(unsupported)
+            + "; H3K27ac libraries are processed IP-only"
+        )
 
     fields = schema["fields"]
     parsed_rows: list[dict[str, Any]] = []
@@ -259,6 +242,7 @@ def read_sample_sheet(
         parsed["__line__"] = line
         parsed["__supplied__"] = {name for name, value in raw.items() if value}
         parsed["assay"] = ASSAY_ALIASES.get(str(parsed["assay"]), parsed["assay"])
+        parsed["role"] = "treatment"
         _resolve_defaults(parsed, schema, line=line)
         parsed_rows.append(parsed)
 

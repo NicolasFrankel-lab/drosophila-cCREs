@@ -24,21 +24,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG = yaml.safe_load((REPO_ROOT / "tests/fixtures/workflow_config.yaml").read_text())
 
 
-def _chip_callpeak(*, broad=False):
-    config = {
+def _h3k27ac_callpeak():
+    return {
         "command": "callpeak",
         "format": "BAMPE",
         "qvalue": 0.01,
-        "broad": broad,
+        "broad": True,
+        "broad_cutoff": 0.1,
         "nomodel": False,
         "shift": None,
         "extsize": None,
         "write_bedgraph": True,
         "spmr": True,
     }
-    if broad:
-        config["broad_cutoff"] = 0.1
-    return config
 
 
 def _dry_run(tmp_path: Path, config: dict, name: str = "workflow") -> str:
@@ -135,7 +133,7 @@ def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
                     }
                 )
     config["activity"] = {
-        "schema_version": 5,
+        "schema_version": 6,
         "master": master,
         "contexts": list(contexts),
         "libraries": libraries,
@@ -264,30 +262,17 @@ def test_workflow_config_rejects_stale_semantic_digest():
         validate_workflow_config(config)
 
 
-@pytest.mark.parametrize(
-    "branch",
-    ["atac_qpois", "atac_se", "chip_tf", "chip_histone", "chip_histone_ip_only"],
-)
+@pytest.mark.parametrize("branch", ["atac_qpois", "atac_se", "h3k27ac"])
 def test_workflow_branches_dry_run(tmp_path, branch):
     config = copy.deepcopy(BASE_CONFIG)
     treatment = config["samples"][0]
     if branch == "atac_se":
         treatment["layout"] = "single"
         treatment.pop("r2")
-    elif branch.startswith("chip"):
-        assay = "chip_histone" if branch == "chip_histone_ip_only" else branch
-        config["assay"] = assay
+    elif branch == "h3k27ac":
+        config["assay"] = "chip_histone"
         config.pop("atac_qpois")
-        treatment["peak_caller"] = _chip_callpeak(broad=assay == "chip_histone")
-        if branch != "chip_histone_ip_only":
-            treatment["control"] = "input_rep1"
-            control = copy.deepcopy(treatment)
-            control["id"] = "input_rep1"
-            control["accessions"] = ["SRR123457"]
-            control["role"] = "control"
-            control.pop("control")
-            control.pop("peak_caller")
-            config["samples"].append(control)
+        treatment["peak_caller"] = _h3k27ac_callpeak()
 
     output = _dry_run(tmp_path, config, branch)
     assert "export_final_bam_manifest" in output
@@ -297,9 +282,37 @@ def test_workflow_branches_dry_run(tmp_path, branch):
         assert "refine_atac_replicate_qpois" in output
     if branch == "atac_se":
         assert "filter_atac_short_fragments" not in output
-    if branch == "chip_histone_ip_only":
-        assert "callpeak_broad" in output
-        assert "chip_fingerprint" not in output
+    if branch == "h3k27ac":
+        assert "callpeak_h3k27ac" in output
+        assert "chip_cross_correlation" in output
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        ({"broad": False}, "must use broad mode"),
+        ({"spmr": False}, "-B --SPMR"),
+    ],
+)
+def test_h3k27ac_callpeak_contract_is_enforced(change, message):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["assay"] = "chip_histone"
+    config.pop("atac_qpois")
+    config["samples"][0]["peak_caller"] = {**_h3k27ac_callpeak(), **change}
+
+    with pytest.raises(AcquisitionError, match=message):
+        validate_workflow_config(config)
+
+
+def test_workflow_config_rejects_input_control_samples():
+    config = copy.deepcopy(BASE_CONFIG)
+    config["assay"] = "chip_histone"
+    config.pop("atac_qpois")
+    config["samples"][0]["peak_caller"] = _h3k27ac_callpeak()
+    config["samples"][0]["control"] = "input_rep1"
+
+    with pytest.raises(AcquisitionError, match="input controls are not supported"):
+        validate_workflow_config(config)
 
 
 def test_technical_lanes_align_separately_then_merge(tmp_path):
@@ -734,7 +747,6 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     assert "build_nearest_tss_promoters" in report_output
     assert "build_nearest_tss_enhancer_candidates" in report_output
     assert "enhancer_nearest_tss_candidates_wide.tsv.gz" in report_output
-    assert "download_contact_" not in report_output
     assert "build_integrated_qc_report" in report_output
     assert "integrated_qc_report.pdf" in report_output
     config["output_stage"] = "quantification"
@@ -748,121 +760,30 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     assert "build_regulatory_element_catalog" not in quantification_output
 
 
-def test_activity_config_rejects_changed_h3k27ac_activity_threshold(tmp_path):
+def test_activity_config_accepts_configured_h3k27ac_activity_threshold(tmp_path):
     config = _activity_config(tmp_path)
     config["activity"]["h3k27ac_activity_percentile_threshold"] = 0.7
+    config.setdefault("provenance", {})["semantic_sha256"] = (
+        workflow_semantic_sha256(config)
+    )
 
-    with pytest.raises(
-        AcquisitionError, match="H3K27ac activity percentile threshold must be 0.60"
-    ):
+    validate_workflow_config(config)
+
+
+@pytest.mark.parametrize("threshold", [0, 1, 1.5, -0.1, True, "0.6"])
+def test_activity_config_rejects_invalid_h3k27ac_activity_threshold(
+    tmp_path, threshold
+):
+    config = _activity_config(tmp_path)
+    config["activity"]["h3k27ac_activity_percentile_threshold"] = threshold
+
+    with pytest.raises(AcquisitionError, match=r"must be in \(0, 1\)"):
         validate_workflow_config(config)
 
 
-def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
-    config = _activity_config(tmp_path, contexts=("observed", "modelled"))
+def test_catalog_import_links_dry_run_uses_only_nearest_tss_rules(tmp_path):
+    config = _activity_config(tmp_path, contexts=("ctx_a", "ctx_b"))
     config["output_stage"] = "links"
-    annotation = tmp_path / "reference" / "genes.gtf.gz"
-    annotation.parent.mkdir(exist_ok=True)
-    annotation.write_bytes(b"annotation")
-    manifest = tmp_path / "contact-sources.tsv"
-    manifest.write_text(
-        "source_id\tcontext\tassay\treplicate\tformat\turl\tlocal_path\t"
-        "checksum\tmatch_quality\tbiological_context\tcaveat\n"
-        "observed_rep1\tobserved\tMicro-C\trep1\tcool.gz\t"
-        "https://example.org/observed_rep1.cool.gz\t"
-        "data/raw/contacts/observed_rep1.cool.gz\t\t"
-        "tissue_matched\tsynthetic\t\n",
-        encoding="utf-8",
-    )
-    config["contacts"] = {
-        "schema_version": 2,
-        "source_manifest": str(manifest),
-        "source_manifest_sha256": sha256_file(manifest),
-        "promoter_annotation": str(annotation),
-        "promoter_annotation_checksum": "sha256:" + "d" * 64,
-        "canonical_chromosomes": ["chr2L"],
-        "promoter_width_bp": 1000,
-        "maximum_distance_bp": 1_000_000,
-        "pseudocount_fraction": 0.01,
-        "candidate_observed_over_expected_threshold": 1.0,
-        "normalization": "merge_counts_then_ice_retry_v2",
-        "promoter_activity": "summit_within_500bp_catalog_activity_v3",
-        "link_score": "contact_weight_x_promoter_activity_percentile_v3",
-        "contexts": [
-            {
-                "id": "observed",
-                "strategy": "observed",
-                "assay": "Micro-C",
-                "match": "tissue_matched",
-                "resolution_bp": 5000,
-                "caveat": "synthetic",
-            },
-            {
-                "id": "modelled",
-                "strategy": "powerlaw",
-                "assay": "distance_model",
-                "match": "no_exact_map",
-                "resolution_bp": 5000,
-                "caveat": "synthetic",
-            },
-        ],
-    }
-
-    output = _dry_run(tmp_path, config, "contact-links")
-
-    for expected in (
-        "build_nearest_tss_promoters",
-        "build_nearest_tss_enhancer_candidates",
-        "enhancer_nearest_tss_candidates_wide.tsv.gz",
-        "download_contact_cool_gz",
-        "standardize_context_contacts",
-        "fit_contact_powerlaw",
-        "build_contact_promoters",
-        "build_context_contact_links",
-        "build_active_contact_enhancer_gene_candidates",
-        "build_nearest_active_promoter_gene_candidates",
-        "build_active_distance_enhancer_gene_candidates",
-        "aggregate_contact_links",
-        "observed.element_promoter_edges.tsv.gz",
-        "modelled.element_gene_candidates.tsv.gz",
-        "observed.active_contact_enhancer_gene_candidates.tsv.gz",
-        "modelled.active_contact_enhancer_gene_candidates.tsv.gz",
-        "observed.active_contact_enhancer_gene_candidates.metrics.json",
-        "observed.nearest_active_promoter_gene_candidates.tsv.gz",
-        "observed.nearest_active_promoter_gene_candidates.metrics.json",
-        "modelled.nearest_active_promoter_gene_candidates.tsv.gz",
-        "modelled.nearest_active_promoter_gene_candidates.metrics.json",
-        "modelled.active_distance_enhancer_gene_candidates.tsv.gz",
-        "modelled.active_distance_enhancer_gene_candidates.metrics.json",
-        "links.checkpoint.json",
-    ):
-        assert expected in output
-    assert "observed.active_distance_enhancer_gene_candidates.tsv.gz" not in output
-    assert "build_integrated_qc_report" not in output
-
-    invalid_enrichment = copy.deepcopy(config)
-    invalid_enrichment["contacts"][
-        "candidate_observed_over_expected_threshold"
-    ] = -0.1
-    with pytest.raises(
-        AcquisitionError, match="Candidate observed/expected threshold"
-    ):
-        validate_workflow_config(invalid_enrichment)
-
-    invalid_promoter_width = copy.deepcopy(config)
-    invalid_promoter_width["contacts"]["promoter_width_bp"] = 500
-    with pytest.raises(AcquisitionError, match="must be 1000 bp"):
-        validate_workflow_config(invalid_promoter_width)
-
-    invalid_promoter_activity = copy.deepcopy(config)
-    invalid_promoter_activity["contacts"][
-        "promoter_activity"
-    ] = "overlapping_master_dhs_max_v1"
-    with pytest.raises(
-        AcquisitionError, match="Unsupported contact promoter_activity"
-    ):
-        validate_workflow_config(invalid_promoter_activity)
-
     imported_paths = {}
     for field in ("catalog", "metrics", "provenance", "resolved_config", "manifest"):
         path = tmp_path / f"imported-{field}"
@@ -871,14 +792,14 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
     config.pop("activity")
     config["input_stage"] = "catalog"
     config["start_stage"] = "catalog"
-    config["run_id"] = "contact-import"
+    config["run_id"] = "catalog-import"
     config["catalog_import"] = {
         "schema_version": 1,
         "manifest": str(imported_paths["manifest"]),
         "manifest_sha256": sha256_file(imported_paths["manifest"]),
         "genome": "dm6",
         "method": "catalog-v1",
-        "contexts": ["observed", "modelled"],
+        "contexts": ["ctx_a", "ctx_b"],
         "source_project": "atlas",
         "source_run_id": "catalog-v1",
         "source_semantic_sha256": "a" * 64,
@@ -893,16 +814,18 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         },
     }
 
-    imported_output = _dry_run(tmp_path, config, "contact-links-import")
+    imported_output = _dry_run(tmp_path, config, "links-import")
 
-    assert "build_context_contact_links" in imported_output
+    assert "build_nearest_tss_promoters" in imported_output
+    assert "build_nearest_tss_enhancer_candidates" in imported_output
     assert str(imported_paths["catalog"]) in imported_output
     assert "build_regulatory_element_catalog" not in imported_output
     assert "build_catalog_bed_tracks" not in imported_output
 
 
-def test_contact_downloads_use_geo_compatible_single_connections():
-    rules = (REPO_ROOT / "workflow" / "rules" / "contacts.smk").read_text()
+def test_workflow_config_rejects_removed_contact_branch(tmp_path):
+    config = _activity_config(tmp_path)
+    config["contacts"] = {"schema_version": 2}
 
-    assert rules.count("--max-connection-per-server=1 --split=1") == 3
-    assert "--max-connection-per-server=8 --split=8" not in rules
+    with pytest.raises(AcquisitionError, match="contact-link branch"):
+        validate_workflow_config(config)

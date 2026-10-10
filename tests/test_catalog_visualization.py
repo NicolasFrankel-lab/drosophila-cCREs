@@ -64,7 +64,7 @@ def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
                 "blacklist_overlap": 1,
                 "h3k27ac_max_500_background_percentile": 0.25,
                 "h3k27ac_active": 0,
-                "activity_state": "excluded_blacklist",
+                "activity_state": "below_h3k27ac_background_threshold",
             }
         )
     output_master = tmp_path / "bed/master_dhs.bed"
@@ -90,7 +90,7 @@ def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
     element_fields = output_elements.read_text().strip().split("\t")
     assert element_fields[3] == (
         "DHS0000001|distal_enhancer_like|tss_distance=1250|"
-        "max3_background_percentile=0.25|inactive|excluded_blacklist|blacklist_overlap"
+        "max3_background_percentile=0.25|inactive|below_h3k27ac_background_threshold|blacklist_overlap"
     )
     assert element_fields[4] == "250"
     assert element_fields[8] == "0,0,0"

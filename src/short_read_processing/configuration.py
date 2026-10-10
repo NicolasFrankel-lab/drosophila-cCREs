@@ -27,7 +27,6 @@ from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
 from .stage_checkpoints import read_stage_checkpoint
 from .workflow_config import validate_stage_selection, workflow_semantic_sha256
-from .contact_metadata import default_dm6_contact_config
 from .integrated_report import (
     discover_report_source_files,
     report_source_record,
@@ -36,7 +35,6 @@ from .integrated_report import (
 
 GENOME_DEFAULTS = {
     "dm6": {"effective_genome_size": 142_573_017, "macs3_genome_size": "dm"},
-    "hg38": {"effective_genome_size": 2_913_022_398, "macs3_genome_size": "hs"},
 }
 REFERENCE_SOURCES = {
     "dm6": {
@@ -61,29 +59,6 @@ REFERENCE_SOURCES = {
             ),
         },
         "autosomes": ["chr2L", "chr2R", "chr3L", "chr3R", "chr4"],
-    },
-    "hg38": {
-        "fasta": {
-            "url": "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/latest/hg38.fa.gz",
-            "checksum": "md5:efb4edf237dd3594e94610ed803c8a44",
-        },
-        "annotation": {
-            "url": (
-                "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/genes/"
-                "hg38.ncbiRefSeq.gtf.gz"
-            ),
-            "checksum": "md5:15e6cab3a16e87f2564839f7500700e2",
-        },
-        "blacklist": {
-            "url": (
-                "https://raw.githubusercontent.com/Boyle-Lab/Blacklist/v2.0/lists/"
-                "hg38-blacklist.v2.bed.gz"
-            ),
-            "checksum": (
-                "sha256:c92e763af17271446194991e71917ac220593a5a3d40a06667be24178ef08cf2"
-            ),
-        },
-        "autosomes": [f"chr{chromosome}" for chromosome in range(1, 23)],
     },
 }
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -175,7 +150,7 @@ def _reference_config(genome: str, reference_root: Path, path_base: Path) -> dic
 def _nearest_tss_link_config(
     *, genome: str, reference: dict[str, Any], path_base: Path
 ) -> dict[str, Any]:
-    """Freeze the contact-independent nearest-TSS link defaults."""
+    """Freeze the nearest-TSS link defaults."""
 
     annotation_url = str(reference["preparation"]["annotation"]["url"])
     annotation_name = annotation_url.rsplit("/", 1)[-1]
@@ -566,7 +541,6 @@ def generate_configs(
                 "genome": genome,
                 "context": first["context"],
                 "role": first["role"],
-                "control": first["control_library"],
                 "layout": layout,
                 "r1": r1,
                 "r2": r2,
@@ -583,7 +557,6 @@ def generate_configs(
     output_paths: list[Path] = []
     for (assay, genome), items in sorted(groups.items()):
         sample_ids = {str(item["id"]) for item in items}
-        role_by_id = {str(item["id"]): str(item["role"]) for item in items}
         item_by_id = {str(item["id"]): item for item in items}
         samples: list[dict[str, object]] = []
         for item in items:
@@ -626,22 +599,6 @@ def generate_configs(
                         "sha256": record["sha256"],
                         "method": item["peak_caller"]["command"],
                     }
-            if assay.startswith("chip") and item["role"] == "treatment":
-                control_library = str(item["control"] or "")
-                if control_library:
-                    if (
-                        control_library not in sample_ids
-                        or role_by_id.get(control_library) != "control"
-                    ):
-                        raise AcquisitionError(
-                            f"ChIP treatment {item['id']} has an invalid matched control"
-                        )
-                    if item_by_id[control_library]["layout"] != item["layout"]:
-                        raise AcquisitionError(
-                            f"ChIP treatment {item['id']} and control {control_library} "
-                            "must have the same read layout"
-                        )
-                    sample["control"] = control_library
             samples.append(sample)
 
         group_project = project if len(groups) == 1 else f"{project}.{assay}.{genome}"
@@ -904,9 +861,15 @@ def generate_activity_config(
     output_stage: str = "report",
     start_stage: str = "master",
     report_source_roots: list[Path] | None = None,
-    include_contacts: bool = False,
+    h3k27ac_activity_threshold: float = 0.60,
 ) -> Path:
     """Generate one resolved master-DHS quantification/catalog configuration."""
+
+    if not 0 < float(h3k27ac_activity_threshold) < 1:
+        raise AcquisitionError(
+            "H3K27ac activity percentile threshold must be in (0, 1)"
+        )
+    h3k27ac_activity_threshold = float(h3k27ac_activity_threshold)
 
     project = _safe_id(project, "project ID")
     run_id = _safe_id(run_id, "run ID")
@@ -1026,7 +989,7 @@ def generate_activity_config(
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {
-            "schema_version": 5,
+            "schema_version": 6,
             "master": activity_master,
             "contexts": contexts,
             "libraries": libraries,
@@ -1034,7 +997,7 @@ def generate_activity_config(
             "atac_browser_extension_bp": 150,
             "normalization": "background_tmm_10kb_autosomes_v1",
             "h3k27ac_signal": "summit_max3_background_tmm_v3",
-            "h3k27ac_activity_percentile_threshold": 0.60,
+            "h3k27ac_activity_percentile_threshold": h3k27ac_activity_threshold,
         },
         "report": {
             "schema_version": 1,
@@ -1057,25 +1020,6 @@ def generate_activity_config(
         reference=config["reference"],
         path_base=path_base,
     )
-    contact_config = (
-        default_dm6_contact_config(
-            contexts=contexts,
-            reference=config["reference"],
-            manifest_path=DEFAULT_SCHEMA.parents[1]
-            / "resources"
-            / "atlas_contact_sources.tsv",
-            path_base=path_base,
-        )
-        if include_contacts and genome == "dm6"
-        else None
-    )
-    if contact_config is not None:
-        config["contacts"] = contact_config
-    elif include_contacts:
-        raise AcquisitionError(
-            "The optional contact branch is available only for the complete "
-            "canonical dm6 atlas context set"
-        )
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.quantification.yaml"
@@ -1094,7 +1038,6 @@ def generate_catalog_links_config(
     path_base: Path,
     schema_path: Path = DEFAULT_SCHEMA,
     genome: str = "dm6",
-    include_contacts: bool = False,
 ) -> Path:
     """Generate a links-only configuration from a frozen catalog bundle."""
 
@@ -1158,25 +1101,6 @@ def generate_catalog_links_config(
         reference=config["reference"],
         path_base=path_base,
     )
-    contact_config = (
-        default_dm6_contact_config(
-            contexts=catalog["contexts"],
-            reference=config["reference"],
-            manifest_path=DEFAULT_SCHEMA.parents[1]
-            / "resources"
-            / "atlas_contact_sources.tsv",
-            path_base=path_base,
-        )
-        if include_contacts and genome == "dm6"
-        else None
-    )
-    if include_contacts and contact_config is None:
-        raise AcquisitionError(
-            "The optional contact branch is available only for the complete "
-            "canonical dm6 atlas context set"
-        )
-    if contact_config is not None:
-        config["contacts"] = contact_config
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.catalog-to-links.yaml"
@@ -1275,10 +1199,6 @@ def generate_resume_config(
     if catalog_import:
         for key in ("manifest", *CATALOG_FILE_FIELDS):
             catalog_import[key] = display(catalog_import[key])
-    contacts = resumed.get("contacts")
-    if contacts:
-        for key in ("source_manifest", "promoter_annotation"):
-            contacts[key] = display(contacts[key])
     nearest_tss_links = resumed.get("nearest_tss_links")
     if nearest_tss_links:
         nearest_tss_links["promoter_annotation"] = display(

@@ -1,22 +1,456 @@
-"""Build contact-independent nearest-TSS enhancer candidate tables."""
+"""Annotate GTF promoters and assign enhancers to their nearest annotated TSS."""
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
+from collections import defaultdict
+from contextlib import contextmanager
 import csv
+from dataclasses import dataclass
 import gzip
+import hashlib
+import io
+import json
+import os
 from pathlib import Path
-from typing import Any
+import re
+import tempfile
+from typing import Any, Iterable
 
+from .accessions import AcquisitionError
 from .artifacts import sha256_file
-from .contact_links import (
-    Promoter,
-    _atomic_tsv,
-    promoter_activities,
-    read_context_elements,
-    read_promoters,
+
+
+ATTRIBUTE_RE = re.compile(
+    r'(?:^|;\s*)(gene_id|gene_name|transcript_id)\s+"([^"]+)"'
 )
-from .contacts import write_json_atomic
+PROMOTER_SUPPORT_DISTANCE_BP = 500
+
+
+PROMOTER_FIELDS = (
+    "promoter_id",
+    "gene_id",
+    "gene_name",
+    "chrom",
+    "tss",
+    "strand",
+    "start",
+    "end",
+    "transcript_ids",
+    "transcript_n",
+    "selection_rule",
+)
+
+
+
+@dataclass(frozen=True)
+class Promoter:
+    promoter_id: str
+    gene_id: str
+    gene_name: str
+    chrom: str
+    tss: int
+    strand: str
+    start: int
+    end: int
+    transcript_ids: str
+
+
+@dataclass(frozen=True)
+class Element:
+    master_dhs_id: str
+    chrom: str
+    start: int
+    end: int
+    summit: int
+    regulatory_class: str
+    activity_state: str
+    atac_signal: float
+    h3k27ac_background_percentile: float | None
+    h3k27ac_active: int
+    combined_activity: float
+    blacklist_overlap: int
+
+
+@dataclass(frozen=True)
+class PromoterActivity:
+    dhs_ids: str
+    accessible: int
+    atac_signal: float
+    h3k27ac_background_percentile: float | None
+    combined_activity: float
+    activity_score: float
+    active: int
+
+
+def _open_text(path: Path):
+    return (
+        gzip.open(path, "rt", encoding="utf-8", newline="")
+        if path.suffix == ".gz"
+        else path.open(encoding="utf-8", newline="")
+    )
+
+
+def _attributes(value: str) -> dict[str, str]:
+    return {key: item for key, item in ATTRIBUTE_RE.findall(value)}
+
+
+def _chrom_sizes(path: Path) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 2 or int(fields[1]) < 1:
+                raise ValueError(f"{path}:{line_number}: invalid chromosome size")
+            sizes[canonical_chromosome(fields[0])] = int(fields[1])
+    return sizes
+
+
+def _centered_window(center: int, width: int, chromosome_size: int) -> tuple[int, int]:
+    start = max(0, center - width // 2)
+    end = min(chromosome_size, center + (width - width // 2))
+    return start, end
+
+
+def _atomic_tsv(path: Path, fields: Iterable[str], rows: Iterable[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        with _output_text(temporary, compressed=path.suffix == ".gz") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=list(fields),
+                delimiter="\t",
+                lineterminator="\n",
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _output_text(path: Path, *, compressed: bool):
+    """Open a deterministic UTF-8 output stream for one temporary path."""
+
+    if not compressed:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            yield handle
+        return
+    with path.open("wb") as raw_handle:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw_handle, mtime=0
+        ) as compressed_handle:
+            with io.TextIOWrapper(
+                compressed_handle, encoding="utf-8", newline=""
+            ) as text_handle:
+                yield text_handle
+
+
+
+CHECKSUM_RE = re.compile(r"^(?:md5:[0-9a-f]{32}|sha256:[0-9a-f]{64})$")
+
+
+def canonical_chromosome(value: str) -> str:
+    return value if value.startswith("chr") else f"chr{value}"
+
+
+def verify_reported_checksum(path: Path, checksum: str) -> None:
+    """Validate one source-reported MD5/SHA-256 when a digest is available."""
+
+    if not checksum:
+        return
+    if not CHECKSUM_RE.fullmatch(checksum):
+        raise AcquisitionError(f"Invalid reported checksum for {path}")
+    algorithm, expected = checksum.split(":", 1)
+    digest = hashlib.new(algorithm)
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    if digest.hexdigest() != expected:
+        raise AcquisitionError(f"Reported {algorithm} checksum mismatch: {path}")
+
+
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".json", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def build_promoter_table(
+    *,
+    annotation: Path,
+    chrom_sizes: Path,
+    canonical_chromosomes: list[str] | None,
+    promoter_width: int,
+    promoter_id_prefix: str = "DM6PROM",
+    annotation_checksum: str | None = None,
+    output: Path,
+    metrics_output: Path,
+) -> dict[str, Any]:
+    """Create one promoter node per distinct gene/TSS from the current GTF."""
+
+    if promoter_width < 1:
+        raise ValueError("Promoter width must be positive")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", promoter_id_prefix):
+        raise ValueError("Promoter ID prefix is invalid")
+    if annotation_checksum:
+        verify_reported_checksum(annotation, annotation_checksum)
+    sizes = _chrom_sizes(chrom_sizes)
+    selected_chromosomes = (
+        [canonical_chromosome(value) for value in canonical_chromosomes]
+        if canonical_chromosomes is not None
+        else list(sizes)
+    )
+    canonical = set(selected_chromosomes)
+    missing = canonical - set(sizes)
+    if missing:
+        raise ValueError(f"Chromosome sizes lack canonical sequences: {sorted(missing)}")
+
+    grouped: dict[tuple[str, str, int, str], dict[str, Any]] = {}
+    with _open_text(annotation) as handle:
+        for line in handle:
+            if not line or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9 or fields[2] != "transcript":
+                continue
+            chromosome = canonical_chromosome(fields[0])
+            if chromosome not in canonical:
+                continue
+            attributes = _attributes(fields[8])
+            gene_id = attributes.get("gene_id", "")
+            transcript_id = attributes.get("transcript_id", "")
+            strand = fields[6]
+            if not gene_id or not transcript_id or strand not in {"+", "-"}:
+                continue
+            tss = int(fields[3]) - 1 if strand == "+" else int(fields[4]) - 1
+            key = (gene_id, chromosome, tss, strand)
+            record = grouped.setdefault(
+                key,
+                {
+                    "gene_name": attributes.get("gene_name", gene_id),
+                    "transcripts": set(),
+                },
+            )
+            record["transcripts"].add(transcript_id)
+    if not grouped:
+        raise ValueError(f"No canonical transcript promoters found in {annotation}")
+
+    chromosome_order = {
+        canonical_chromosome(chromosome): index
+        for index, chromosome in enumerate(selected_chromosomes)
+    }
+    ordered = sorted(
+        grouped,
+        key=lambda key: (chromosome_order[key[1]], key[2], key[0], key[3]),
+    )
+    rows = []
+    for index, (gene_id, chromosome, tss, strand) in enumerate(ordered, start=1):
+        start, end = _centered_window(tss, promoter_width, sizes[chromosome])
+        record = grouped[(gene_id, chromosome, tss, strand)]
+        transcripts = sorted(record["transcripts"])
+        rows.append(
+            {
+                "promoter_id": f"{promoter_id_prefix}{index:08d}",
+                "gene_id": gene_id,
+                "gene_name": record["gene_name"],
+                "chrom": chromosome,
+                "tss": tss,
+                "strand": strand,
+                "start": start,
+                "end": end,
+                "transcript_ids": ";".join(transcripts),
+                "transcript_n": len(transcripts),
+                "selection_rule": "all_distinct_gene_tss",
+            }
+        )
+    _atomic_tsv(output, PROMOTER_FIELDS, rows)
+    metrics = {
+        "schema_version": 1,
+        "annotation": str(annotation),
+        "annotation_sha256": sha256_file(annotation),
+        "annotation_reported_checksum": annotation_checksum,
+        "chrom_sizes": str(chrom_sizes),
+        "chrom_sizes_sha256": sha256_file(chrom_sizes),
+        "canonical_chromosomes": canonical_chromosomes,
+        "chromosomes": selected_chromosomes,
+        "promoter_width_bp": promoter_width,
+        "promoter_id_prefix": promoter_id_prefix,
+        "promoter_count": len(rows),
+        "gene_count": len({row["gene_id"] for row in rows}),
+        "output": str(output),
+        "output_sha256": sha256_file(output),
+    }
+    write_json_atomic(metrics_output, metrics)
+    return metrics
+
+
+def read_promoters(path: Path) -> list[Promoter]:
+    promoters = []
+    seen: set[str] = set()
+    with _open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = set(PROMOTER_FIELDS) - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"{path} lacks promoter fields: {sorted(missing)}")
+        for row in reader:
+            promoter_id = row["promoter_id"]
+            if promoter_id in seen:
+                raise ValueError(f"Duplicate promoter ID {promoter_id}")
+            seen.add(promoter_id)
+            promoters.append(
+                Promoter(
+                    promoter_id=promoter_id,
+                    gene_id=row["gene_id"],
+                    gene_name=row["gene_name"],
+                    chrom=row["chrom"],
+                    tss=int(row["tss"]),
+                    strand=row["strand"],
+                    start=int(row["start"]),
+                    end=int(row["end"]),
+                    transcript_ids=row["transcript_ids"],
+                )
+            )
+    if not promoters:
+        raise ValueError(f"No promoters in {path}")
+    return promoters
+
+
+def read_context_elements(path: Path, context: str) -> list[Element]:
+    required = {
+        "blacklist_overlap",
+        "master_dhs_id",
+        "chrom",
+        "start",
+        "end",
+        "summit",
+        "context",
+        "context_membership",
+        "regulatory_class",
+        "atac_normalized_cpm_per_kb",
+        "h3k27ac_max_500_background_percentile",
+        "h3k27ac_active",
+        "activity_state",
+        "combined_activity_max_500",
+    }
+    elements = []
+    seen: set[str] = set()
+    with _open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        fieldnames = set(reader.fieldnames or ())
+        missing = required - fieldnames
+        if missing:
+            raise ValueError(f"{path} lacks catalog fields: {sorted(missing)}")
+        for row in reader:
+            if row["context"] != context or row["context_membership"] != "1":
+                continue
+            master_id = row["master_dhs_id"]
+            if master_id in seen:
+                raise ValueError(f"{path} repeats {master_id}")
+            seen.add(master_id)
+            percentile_text = row["h3k27ac_max_500_background_percentile"]
+            percentile = float(percentile_text) if percentile_text else None
+            elements.append(
+                Element(
+                    master_dhs_id=master_id,
+                    chrom=row["chrom"],
+                    start=int(row["start"]),
+                    end=int(row["end"]),
+                    summit=int(row["summit"]),
+                    regulatory_class=row["regulatory_class"],
+                    activity_state=row["activity_state"],
+                    atac_signal=float(row["atac_normalized_cpm_per_kb"]),
+                    h3k27ac_background_percentile=percentile,
+                    h3k27ac_active=int(row["h3k27ac_active"]),
+                    combined_activity=float(row["combined_activity_max_500"]),
+                    blacklist_overlap=int(row["blacklist_overlap"]),
+                )
+            )
+    if not elements:
+        raise ValueError(f"No context-member elements for {context} in {path}")
+    return elements
+
+
+def promoter_activities(
+    promoters: list[Promoter],
+    elements: list[Element],
+) -> dict[str, PromoterActivity]:
+    """Summarize DHSs whose summits lie within 500 bp of each promoter TSS.
+
+    Every supporting DHS is listed, but promoter activity, signal and score use
+    only blacklist-clear supporting DHSs.
+    """
+
+    by_chromosome: dict[str, list[Element]] = defaultdict(list)
+    for element in elements:
+        by_chromosome[element.chrom].append(element)
+    summits: dict[str, list[int]] = {}
+    for chromosome, values in by_chromosome.items():
+        values.sort(key=lambda value: (value.summit, value.master_dhs_id))
+        summits[chromosome] = [value.summit for value in values]
+
+    result = {}
+    for promoter in promoters:
+        values = by_chromosome.get(promoter.chrom, [])
+        chromosome_summits = summits.get(promoter.chrom, [])
+        start = bisect_left(
+            chromosome_summits, promoter.tss - PROMOTER_SUPPORT_DISTANCE_BP
+        )
+        stop = bisect_right(
+            chromosome_summits, promoter.tss + PROMOTER_SUPPORT_DISTANCE_BP
+        )
+        supporting = values[start:stop]
+        eligible_supporting = [
+            element for element in supporting if not element.blacklist_overlap
+        ]
+        percentiles = [
+            element.h3k27ac_background_percentile
+            for element in eligible_supporting
+            if element.h3k27ac_background_percentile is not None
+        ]
+        percentile = max(percentiles) if percentiles else None
+        combined = max(
+            (element.combined_activity for element in eligible_supporting), default=0.0
+        )
+        activity_score = max(
+            (
+                element.combined_activity * element.h3k27ac_background_percentile
+                for element in eligible_supporting
+                if element.h3k27ac_background_percentile is not None
+            ),
+            default=0.0,
+        )
+        result[promoter.promoter_id] = PromoterActivity(
+            dhs_ids=";".join(element.master_dhs_id for element in supporting),
+            accessible=int(bool(supporting)),
+            atac_signal=max(
+                (element.atac_signal for element in eligible_supporting), default=0.0
+            ),
+            h3k27ac_background_percentile=percentile,
+            combined_activity=combined,
+            activity_score=activity_score,
+            active=int(
+                any(element.h3k27ac_active for element in eligible_supporting)
+            ),
+        )
+    return result
 
 
 BASE_FIELDS = (
@@ -26,6 +460,7 @@ BASE_FIELDS = (
     "element_end",
     "element_summit",
     "regulatory_class",
+    "blacklist_overlap",
     "nearest_tss_distance_bp",
     "nearest_tss_tie_count",
     "nearest_promoter_ids",
@@ -64,6 +499,7 @@ CATALOG_STORED_FIELDS = (
     "context",
     "context_membership",
     "regulatory_class",
+    "blacklist_overlap",
     "atac_normalized_cpm_per_kb",
     "h3k27ac_max_500_background_percentile",
     "h3k27ac_active",
@@ -71,14 +507,14 @@ CATALOG_STORED_FIELDS = (
     "combined_activity_max_500",
 )
 CATALOG_REQUIRED_FIELDS = set(CATALOG_STORED_FIELDS)
-
-
-def _open_catalog(path: Path):
-    return (
-        gzip.open(path, "rt", encoding="utf-8", newline="")
-        if path.suffix == ".gz"
-        else path.open(encoding="utf-8", newline="")
-    )
+STATIC_CATALOG_FIELDS = (
+    "chrom",
+    "start",
+    "end",
+    "summit",
+    "regulatory_class",
+    "blacklist_overlap",
+)
 
 
 def _format(value: float | None) -> str:
@@ -90,7 +526,7 @@ def _catalog_rows(
 ) -> tuple[list[str], dict[str, dict[str, dict[str, str]]]]:
     by_element: dict[str, dict[str, dict[str, str]]] = {}
     element_order: list[str] = []
-    with _open_catalog(path) as handle:
+    with _open_text(path) as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         missing = CATALOG_REQUIRED_FIELDS - set(reader.fieldnames or ())
         if missing:
@@ -113,9 +549,9 @@ def _catalog_rows(
         if set(rows) != expected:
             raise ValueError(f"{path} lacks contexts for {master_id}")
         first = rows[contexts[0]]
-        static = tuple(first[field] for field in ("chrom", "start", "end", "summit", "regulatory_class"))
+        static = tuple(first[field] for field in STATIC_CATALOG_FIELDS)
         if any(
-            tuple(row[field] for field in ("chrom", "start", "end", "summit", "regulatory_class"))
+            tuple(row[field] for field in STATIC_CATALOG_FIELDS)
             != static
             for row in rows.values()
         ):
@@ -195,7 +631,7 @@ def build_nearest_tss_enhancer_candidates(
     activities = {
         context: promoter_activities(
             promoters,
-            read_context_elements(catalog_path, context)[0],
+            read_context_elements(catalog_path, context),
         )
         for context in contexts
     }
@@ -324,6 +760,7 @@ def build_nearest_tss_enhancer_candidates(
                 "element_end": first["end"],
                 "element_summit": first["summit"],
                 "regulatory_class": first["regulatory_class"],
+                "blacklist_overlap": first["blacklist_overlap"],
                 "nearest_tss_distance_bp": "" if distance is None else distance,
                 "nearest_tss_tie_count": len(nearest),
                 "nearest_promoter_ids": ";".join(
@@ -352,7 +789,7 @@ def build_nearest_tss_enhancer_candidates(
     _atomic_tsv(output, fields, output_rows)
     metrics = {
         "schema_version": 1,
-        "method": "nearest_annotated_tss_all_ties_wide_v1",
+        "method": "nearest_annotated_tss_all_ties_wide_v2",
         "catalog": str(catalog_path),
         "catalog_sha256": sha256_file(catalog_path),
         "promoters": str(promoters_path),
@@ -360,8 +797,9 @@ def build_nearest_tss_enhancer_candidates(
         "contexts": contexts,
         "enhancer_classes": enhancer_classes,
         "promoter_activity_definition": (
-            "any context-member master DHS summit within inclusive +/-500 bp of "
-            "the exact annotated TSS with catalog H3K27ac activity"
+            "any blacklist-clear context-member master DHS summit within "
+            "inclusive +/-500 bp of the exact annotated TSS with catalog "
+            "H3K27ac activity"
         ),
         "candidate_assignment": (
             "minimum absolute enhancer-summit to annotated-TSS distance; all exact "

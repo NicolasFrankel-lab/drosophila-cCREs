@@ -404,10 +404,10 @@ if ACTIVITY:
             mkdir -p $(dirname {output.counts:q}) $(dirname {log:q})
             temporary=$(mktemp -d $(dirname {output.counts:q})/.{wildcards.library}.XXXXXX)
             trap 'rm -rf "$temporary"' EXIT
-            pigz -dc {input.units:q} \
-              | bedtools coverage -a {input.windows_bed:q} -b stdin \
-                  -counts -sorted -g {input.chrom_sizes:q} \
-                  > "$temporary/coverage.tsv" 2> {log:q}
+            pigz -t {input.units:q} 2> {log:q}
+            bedtools coverage -a {input.windows_bed:q} -b {input.units:q} \
+                -counts -sorted -g {input.chrom_sizes:q} \
+                > "$temporary/coverage.tsv" 2>> {log:q}
             python {input.script:q} --window-table {input.windows:q} \
               --coverage "$temporary/coverage.tsv" \
               --total-units {input.total:q} \
@@ -466,7 +466,10 @@ if ACTIVITY:
             provenance=ACTIVITY_REGULATORY_PROVENANCE
         params:
             element_paths=ACTIVITY_REGULATORY_ELEMENTS,
-            contexts=ACTIVITY_CONTEXTS
+            contexts=ACTIVITY_CONTEXTS,
+            activity_threshold=float(
+                ACTIVITY["h3k27ac_activity_percentile_threshold"]
+            )
         resources:
             mem_mb=12000
         conda:
@@ -652,8 +655,6 @@ if ACTIVITY:
             all_contexts_igv_session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
             nearest_tss_candidates=NEAREST_TSS_ENHANCER_CANDIDATES,
             nearest_tss_metrics=NEAREST_TSS_ENHANCER_METRICS,
-            contact_link_metrics=(CONTACT_LINK_METRICS if CONTACTS else []),
-            contact_link_provenance=(CONTACT_LINK_PROVENANCE if CONTACTS else []),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
         output:
             html=ACTIVITY_REPORT_HTML,
@@ -703,14 +704,6 @@ if ACTIVITY:
                 "igv_session_all_contexts": ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
                 "nearest_tss_enhancer_candidates": NEAREST_TSS_ENHANCER_CANDIDATES,
                 "nearest_tss_enhancer_metrics": NEAREST_TSS_ENHANCER_METRICS,
-                **(
-                    {
-                        "contact_graph_metrics": CONTACT_LINK_METRICS,
-                        "contact_graph_provenance": CONTACT_LINK_PROVENANCE,
-                    }
-                    if CONTACTS
-                    else {}
-                ),
             }
         resources:
             mem_mb=4000

@@ -22,13 +22,13 @@ fields:
     pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
   assay:
     type: enum
-    values: [atac, h3k27ac, chip_tf, chip_histone]
+    values: [atac, h3k27ac, chip_histone]
   context:
     type: string
     pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
   role:
     type: enum
-    values: [treatment, control]
+    values: [treatment]
   layout:
     type: enum
     values: [single, paired]
@@ -38,7 +38,7 @@ fields:
     type: path
   genome:
     type: enum
-    values: [dm6, hg38]
+    values: [dm6]
   filtering_contract:
     type: enum
     values: [short-read-processing-final-v2]

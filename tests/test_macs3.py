@@ -22,7 +22,6 @@ def test_callpeak_argv_and_bedgraph_outputs():
     arguments = callpeak_arguments(
         config,
         treatment_bam=Path("treatment.bam"),
-        control_bam=Path("input.bam"),
         name="atac_rep1",
         genome_size="dm",
         output_dir=Path("peaks"),
@@ -32,7 +31,7 @@ def test_callpeak_argv_and_bedgraph_outputs():
     assert arguments[arguments.index("-q") + 1] == "0.01"
     assert "-B" in arguments
     assert "--SPMR" in arguments
-    assert arguments[arguments.index("-c") + 1] == "input.bam"
+    assert "-c" not in arguments
     assert arguments[arguments.index("--shift") + 1] == "-75"
     assert arguments[arguments.index("--extsize") + 1] == "150"
     assert callpeak_bedgraph_paths(Path("peaks"), "atac_rep1") == (
@@ -41,7 +40,7 @@ def test_callpeak_argv_and_bedgraph_outputs():
     )
 
 
-def test_broad_callpeak_omits_external_control_when_ip_only():
+def test_h3k27ac_broad_callpeak_is_ip_only():
     config = {
         "command": "callpeak",
         "format": "BAMPE",
@@ -57,7 +56,6 @@ def test_broad_callpeak_omits_external_control_when_ip_only():
     arguments = callpeak_arguments(
         config,
         treatment_bam=Path("h3k27ac.bam"),
-        control_bam=None,
         name="h3k27ac_rep1",
         genome_size="dm",
         output_dir=Path("peaks"),
