@@ -208,6 +208,7 @@ def test_output_stage_does_not_change_scientific_semantic_digest():
         ("links", "report"),
         ("catalog", "report"),
         ("report", "report"),
+        ("master", "footprints"),
     ],
 )
 def test_each_logical_boundary_can_continue_forward(start, stop):
@@ -828,4 +829,86 @@ def test_workflow_config_rejects_removed_contact_branch(tmp_path):
     config["contacts"] = {"schema_version": 2}
 
     with pytest.raises(AcquisitionError, match="contact-link branch"):
+        validate_workflow_config(config)
+
+
+def _footprint_config(tmp_path: Path) -> dict:
+    config = copy.deepcopy(BASE_CONFIG)
+    config["input_stage"] = "master"
+    config["start_stage"] = "master"
+    config["output_stage"] = "footprints"
+    config["samples"] = []
+    config.pop("atac_qpois")
+    artifacts = {}
+    for field in ("master_bed", "summits_bed", "membership_tsv", "context_matrix_tsv", "stats_json"):
+        path = tmp_path / "master" / field
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(field)
+        artifacts[field] = str(path)
+        artifacts[f"{field}_sha256"] = "a" * 64
+    config["external_master"] = {
+        "genome": "dm6",
+        "method": "reciprocal_summit_complete_linkage_v2",
+        "input_filtering_contract": "short-read-processing-final-v2",
+        "source_project": "atlas",
+        "source_run_id": "master-v1",
+        **artifacts,
+    }
+    libraries = []
+    for library_id, context in (("atac_rep1", "eye"), ("atac_rep2", "eye"), ("atac_rep3", "wing")):
+        bam = tmp_path / "bams" / f"{library_id}.bam"
+        bam.parent.mkdir(exist_ok=True)
+        bam.write_text(library_id)
+        Path(f"{bam}.bai").write_text(library_id)
+        libraries.append({
+            "id": library_id, "context": context, "layout": "paired", "genome": "dm6",
+            "bam": str(bam), "bai": f"{bam}.bai", "bam_sha256": "b" * 64, "bai_sha256": "c" * 64,
+            "filtering_contract": "short-read-processing-final-v2", "qc_status": "accepted",
+        })
+    config["footprints"] = {
+        "schema_version": 1,
+        "method": "tobias_0.17.3_context_merged_atacorrect_scorebigwig_v1",
+        "contexts": ["eye", "wing"],
+        "libraries": libraries,
+        "atacorrect": {"read_shift": [4, -5], "k_flank": 12, "bg_shift": 100, "window": 100,
+                       "score_mat": "DWM"},
+        "scorebigwig": {"score": "footprint", "fp_min": 20, "fp_max": 50, "flank_min": 10,
+                        "flank_max": 30, "extend": 100},
+    }
+    return config
+
+
+def test_footprint_dry_run_pools_contexts_and_skips_processing(tmp_path):
+    output = _dry_run(tmp_path, _footprint_config(tmp_path), "footprints")
+
+    for rule in ("validate_external_master", "validate_footprint_bam", "merge_footprint_context_bams",
+                 "tobias_atacorrect", "tobias_scorebigwig", "export_stage_checkpoint"):
+        assert rule in output
+    assert "TOBIAS ATACorrect" in output and "--read_shift 4 -5" in output
+    assert "TOBIAS ScoreBigwig" in output
+    assert output.count("rule tobias_atacorrect:") == 2
+    assert re.search(r"footprints/eye\.corrected\.bw", output)
+    for forbidden in ("align_lane", "build_atac_master_dhs", "export_master_manifest",
+                      "prepare_activity_atac_units"):
+        assert forbidden not in output
+
+
+def test_footprints_require_footprint_output_stage():
+    config = _footprint_config(Path("/tmp"))
+    config["output_stage"] = "master"
+    with pytest.raises(AcquisitionError, match="footprints mapping requires output_stage=footprints"):
+        validate_workflow_config(config)
+
+
+def test_footprints_reject_unaccepted_libraries():
+    config = _footprint_config(Path("/tmp"))
+    config["footprints"]["libraries"][0]["qc_status"] = "rejected"
+    with pytest.raises(AcquisitionError, match="accepted QC is required"):
+        validate_workflow_config(config)
+
+
+def test_footprint_output_requires_footprints_mapping():
+    config = _footprint_config(Path("/tmp"))
+    config.pop("footprints")
+    with pytest.raises(AcquisitionError, match="requires a footprints mapping"):
         validate_workflow_config(config)

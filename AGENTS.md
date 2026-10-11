@@ -76,6 +76,10 @@ names, or sample relationships.
   blacklist-clear context-member DHSs whose summits lie within an inclusive
   500 bp of the exact TSS; it does not use DHS-boundary overlap with the
   promoter BED interval.
+- Optional footprinting pools a context's accepted ATAC BAMs, corrects Tn5 bias
+  with TOBIAS ATACorrect over the master DHS registry and scores footprints with
+  TOBIAS ScoreBigwig. TOBIAS parameters are recorded in the resolved config and
+  semantic digest; final BAMs are unshifted, so TOBIAS applies the +4/-5 shift.
 - H3K27ac is IP-only: no input controls, MACS3 broad `callpeak` without `-c`.
   Its `callpeak` outputs include `-B --SPMR` treatment-pileup and local-lambda
   bedGraphs. The ATAC qpois branch deliberately omits `--SPMR`.

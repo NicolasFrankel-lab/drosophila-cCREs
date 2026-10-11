@@ -26,7 +26,7 @@ from .artifacts import (
 from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
 from .stage_checkpoints import read_stage_checkpoint
-from .workflow_config import validate_stage_selection, workflow_semantic_sha256
+from .workflow_config import FOOTPRINT_METHOD, validate_stage_selection, workflow_semantic_sha256
 from .integrated_report import (
     discover_report_source_files,
     report_source_record,
@@ -1104,6 +1104,138 @@ def generate_catalog_links_config(
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.catalog-to-links.yaml"
+    _write_config_if_changed(output_path, config)
+    return output_path.resolve()
+
+
+def generate_footprint_config(
+    *,
+    sample_sheet_path: Path,
+    final_bam_manifests: list[Path],
+    master_manifest_path: Path,
+    output_dir: Path,
+    project: str,
+    run_id: str,
+    reference_root: Path,
+    path_base: Path,
+    require_files: bool = True,
+    schema_path: Path = DEFAULT_SCHEMA,
+    genome: str = "dm6",
+) -> Path:
+    """Generate a TOBIAS footprinting configuration from a frozen master and reviewed ATAC BAMs.
+
+    Each context's accepted ATAC libraries are merged, Tn5-bias corrected with
+    TOBIAS ATACorrect over the master DHS registry and scored with ScoreBigwig.
+    """
+
+    project = _safe_id(project, "project ID")
+    run_id = _safe_id(run_id, "run ID")
+    if genome not in GENOME_DEFAULTS:
+        raise AcquisitionError(f"Unsupported genome: {genome!r}")
+    sheet_rows = read_sample_sheet(sample_sheet_path, schema_path=schema_path)
+    manifests = _merge_final_bam_manifests(
+        final_bam_manifests, require_files=require_files, allow_rejected=True
+    )
+    sheet_atac = {
+        str(row["library_id"]): row
+        for row in sheet_rows
+        if row["assay"] == "atac" and row["role"] == "treatment"
+    }
+    manifest_atac = {
+        library_id: artifact
+        for library_id, artifact in manifests.items()
+        if artifact["assay"] == "atac"
+    }
+    unknown = sorted(set(manifest_atac) - set(sheet_atac))
+    if unknown:
+        raise AcquisitionError(
+            "Footprint BAM manifest contains ATAC libraries absent from the sample sheet: "
+            + ", ".join(unknown)
+        )
+    missing = sorted(set(sheet_atac) - set(manifest_atac))
+    if missing:
+        raise AcquisitionError(
+            "Footprint final-BAM manifests are missing ATAC libraries: " + ", ".join(missing)
+        )
+    libraries: list[dict[str, Any]] = []
+    exclusions: list[dict[str, Any]] = []
+    for library_id, row in sorted(sheet_atac.items()):
+        artifact = manifest_atac[library_id]
+        if str(artifact["context"]) != str(row["context"]):
+            raise AcquisitionError(f"Footprint BAM {library_id!r} context differs from its sample sheet")
+        if artifact["genome"] != genome:
+            raise AcquisitionError(f"Footprint BAM {library_id!r} uses {artifact['genome']!r}, expected {genome!r}")
+        if artifact["qc_status"] == "pending_review":
+            raise AcquisitionError(f"Footprint BAM {library_id!r} requires qc_status='accepted'")
+        if artifact["qc_status"] == "rejected":
+            exclusions.append({"id": library_id, "context": str(row["context"]), "reason": artifact["notes"]})
+            continue
+        if artifact["layout"] != "paired":
+            raise AcquisitionError(f"Footprint ATAC BAM {library_id!r} must be paired-end")
+        libraries.append(
+            {
+                "id": library_id,
+                "context": str(row["context"]),
+                "layout": artifact["layout"],
+                "genome": artifact["genome"],
+                "bam": _display_path(artifact["bam"], path_base),
+                "bai": _display_path(artifact["bai"], path_base),
+                "bam_sha256": artifact["bam_sha256"],
+                "bai_sha256": artifact["bai_sha256"],
+                "filtering_contract": artifact["filtering_contract"],
+                "qc_status": artifact["qc_status"],
+            }
+        )
+    if not libraries:
+        raise AcquisitionError("Footprinting requires at least one accepted ATAC library")
+    master = read_master_manifest(master_manifest_path, require_files=require_files)
+    if master["genome"] != genome:
+        raise AcquisitionError(
+            f"Master manifest genome {master['genome']!r} does not match {genome!r}"
+        )
+    external_master = {
+        key: _display_path(value, path_base) if key in MASTER_FILE_FIELDS else value
+        for key, value in master.items()
+    }
+    config: dict[str, Any] = {
+        "project": project,
+        "run_id": run_id,
+        "output_dir": "results",
+        "assay": "atac",
+        "input_stage": "master",
+        "start_stage": "master",
+        "output_stage": "footprints",
+        "reference": _reference_config(genome, reference_root, path_base),
+        "samples": [],
+        "external_master": external_master,
+        "footprints": {
+            "schema_version": 1,
+            "method": FOOTPRINT_METHOD,
+            "contexts": sorted({library["context"] for library in libraries}),
+            "libraries": libraries,
+            # TOBIAS 0.17.3 defaults, recorded so that changing them changes the run digest.
+            "atacorrect": {"read_shift": [4, -5], "k_flank": 12, "bg_shift": 100, "window": 100,
+                           "score_mat": "DWM"},
+            "scorebigwig": {"score": "footprint", "fp_min": 20, "fp_max": 50, "flank_min": 10,
+                            "flank_max": 30, "extend": 100},
+        },
+        "provenance": {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "input_mode": "footprint_artifact_manifests",
+            "sample_sheet": _display_path(sample_sheet_path, path_base),
+            "sample_sheet_sha256": sha256_file(sample_sheet_path),
+            "sample_sheet_schema": _display_path(schema_path, path_base),
+            "sample_sheet_schema_sha256": sha256_file(schema_path),
+            "master_manifest": _display_path(master_manifest_path, path_base),
+            "master_manifest_sha256": sha256_file(master_manifest_path),
+            "final_bam_manifests": [_display_path(path, path_base) for path in final_bam_manifests],
+            "final_bam_manifest_sha256": [sha256_file(path) for path in final_bam_manifests],
+            "excluded_footprint_libraries": exclusions,
+        },
+    }
+    config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{project}.footprints.yaml"
     _write_config_if_changed(output_path, config)
     return output_path.resolve()
 

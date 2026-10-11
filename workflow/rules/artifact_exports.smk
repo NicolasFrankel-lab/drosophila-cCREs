@@ -55,7 +55,7 @@ rule export_stage_resolved_config:
     params:
         config=json.dumps(config, sort_keys=True)
     wildcard_constraints:
-        stage="trimming|alignment|qc|master|quantification|catalog|links|report"
+        stage="trimming|alignment|qc|master|quantification|catalog|links|report|footprints"
     resources:
         mem_mb=1000
     conda:
@@ -83,7 +83,7 @@ rule export_stage_checkpoint:
         ),
         parameters=STAGE_CHECKPOINT_PARAMETERS
     wildcard_constraints:
-        stage="trimming|alignment|qc|master|quantification|catalog|links|report"
+        stage="trimming|alignment|qc|master|quantification|catalog|links|report|footprints"
     resources:
         mem_mb=1000
     conda:

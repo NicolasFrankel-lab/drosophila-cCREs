@@ -86,6 +86,29 @@ ACTIVITY_LIBRARY_FIELDS = {
     "filtering_contract",
     "qc_status",
 }
+FOOTPRINT_FIELDS = {
+    "schema_version",
+    "method",
+    "contexts",
+    "libraries",
+    "atacorrect",
+    "scorebigwig",
+}
+FOOTPRINT_LIBRARY_FIELDS = {
+    "id",
+    "context",
+    "layout",
+    "genome",
+    "bam",
+    "bai",
+    "bam_sha256",
+    "bai_sha256",
+    "filtering_contract",
+    "qc_status",
+}
+FOOTPRINT_METHOD = "tobias_0.17.3_context_merged_atacorrect_scorebigwig_v1"
+FOOTPRINT_ATACORRECT_FIELDS = {"read_shift", "k_flank", "bg_shift", "window", "score_mat"}
+FOOTPRINT_SCOREBIGWIG_FIELDS = {"score", "fp_min", "fp_max", "flank_min", "flank_max", "extend"}
 CATALOG_IMPORT_FIELDS = {
     "schema_version",
     "manifest",
@@ -130,7 +153,7 @@ OUTPUT_STAGES_BY_INPUT = {
     "trimming": {"trimming", "alignment", "qc"},
     "alignment": {"alignment", "qc"},
     "qc": {"qc", "master"},
-    "master": {"master", "quantification", "catalog", "links", "report"},
+    "master": {"master", "quantification", "catalog", "links", "report", "footprints"},
     "quantification": {"quantification", "catalog", "links", "report"},
     "catalog": {"catalog", "links", "report"},
     "links": {"links", "report"},
@@ -587,6 +610,18 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     elif catalog_import is not None:
         raise AcquisitionError("catalog_import requires input_stage=catalog")
 
+    footprints = config.get("footprints")
+    if output_stage == "footprints":
+        if input_stage != "master" or config["assay"] != "atac":
+            raise AcquisitionError(
+                "Footprinting requires input_stage=master and assay=atac"
+            )
+        if not isinstance(footprints, dict):
+            raise AcquisitionError("Footprinting requires a footprints mapping")
+        _validate_footprints(footprints, config["reference"]["name"])
+    elif footprints is not None:
+        raise AcquisitionError("footprints mapping requires output_stage=footprints")
+
     nearest_tss_links = config.get("nearest_tss_links")
     if input_stage in {"quantification", "catalog"}:
         if not isinstance(nearest_tss_links, dict):
@@ -880,6 +915,55 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 )
 
 
+def _validate_footprints(footprints: dict[str, Any], genome: str) -> None:
+    _required(footprints, FOOTPRINT_FIELDS, "Footprints")
+    if footprints["schema_version"] != 1:
+        raise AcquisitionError("Unsupported footprints schema version")
+    if footprints["method"] != FOOTPRINT_METHOD:
+        raise AcquisitionError("Unsupported footprinting method")
+    _required(footprints["atacorrect"], FOOTPRINT_ATACORRECT_FIELDS, "Footprints atacorrect")
+    _required(footprints["scorebigwig"], FOOTPRINT_SCOREBIGWIG_FIELDS, "Footprints scorebigwig")
+    contexts = footprints["contexts"]
+    if (
+        not isinstance(contexts, list)
+        or not contexts
+        or len(contexts) != len(set(contexts))
+        or any(not SAFE_ID_RE.fullmatch(str(item)) for item in contexts)
+    ):
+        raise AcquisitionError("Footprint contexts are invalid")
+    libraries = footprints["libraries"]
+    if not isinstance(libraries, list) or not libraries:
+        raise AcquisitionError("Footprint libraries must be a non-empty list")
+    library_ids = [str(library.get("id", "")) for library in libraries]
+    if (
+        any(not SAFE_ID_RE.fullmatch(item) for item in library_ids)
+        or len(library_ids) != len(set(library_ids))
+    ):
+        raise AcquisitionError("Footprint library IDs must be safe and unique")
+    artifact_paths = [str(library.get(field, "")) for library in libraries for field in ("bam", "bai")]
+    if any(not item for item in artifact_paths) or len(artifact_paths) != len(set(artifact_paths)):
+        raise AcquisitionError("Footprint libraries must use distinct BAM and BAI paths")
+    for library in libraries:
+        library_id = str(library["id"])
+        _required(library, FOOTPRINT_LIBRARY_FIELDS, f"Footprint library {library_id}")
+        if library["layout"] != "paired":
+            raise AcquisitionError(f"Footprint library {library_id}: ATAC must be paired-end")
+        if library["genome"] != genome:
+            raise AcquisitionError(f"Footprint library {library_id}: genome differs from reference")
+        if library["filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
+            raise AcquisitionError(f"Footprint library {library_id}: invalid filtering contract")
+        if library["qc_status"] != "accepted":
+            raise AcquisitionError(f"Footprint library {library_id}: accepted QC is required")
+        for field in ("bam_sha256", "bai_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(library[field])):
+                raise AcquisitionError(f"Footprint library {library_id}: invalid {field}")
+        if str(library["context"]) not in contexts:
+            raise AcquisitionError(f"Footprint library {library_id}: unknown context")
+    missing = sorted(set(contexts) - {str(library["context"]) for library in libraries})
+    if missing:
+        raise AcquisitionError("Footprint contexts without libraries: " + ", ".join(missing))
+
+
 def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
     """Resolve relative FASTQ/reference paths against a config's launch directory in place."""
 
@@ -946,6 +1030,14 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
             activity["master"][key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )
+    footprints = config.get("footprints")
+    if footprints:
+        for library in footprints["libraries"]:
+            for key in ("bam", "bai"):
+                path = Path(library[key])
+                library[key] = str(
+                    path if path.is_absolute() else (base / path).resolve()
+                )
     catalog_import = config.get("catalog_import")
     if catalog_import:
         for key in ("manifest", *CATALOG_FILE_FIELDS):

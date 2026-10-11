@@ -20,6 +20,7 @@ LOGICAL_STAGES = (
     "catalog",
     "links",
     "report",
+    "footprints",
 )
 
 

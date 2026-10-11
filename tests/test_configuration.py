@@ -15,6 +15,7 @@ from short_read_processing.configuration import (
     generate_activity_config,
     generate_catalog_links_config,
     generate_configs,
+    generate_footprint_config,
     generate_resume_config,
 )
 from short_read_processing.manifest import write_manifest
@@ -1240,6 +1241,92 @@ def test_catalog_import_rejects_a_different_sample_sheet(tmp_path):
             output_dir=tmp_path / "configs",
             project="atlas-links",
             run_id="from-catalog-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+        )
+
+
+def _footprint_sheet(tmp_path: Path) -> Path:
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+        "SRR100003\tatac_rep3\tatac\twing\n"
+        "SRR100004\tatac_rep4\tatac\twing\n"
+        "SRR100005\th3k27ac_rep1\th3k27ac\teye\n"
+    )
+    return sheet
+
+
+def test_footprint_config_pools_accepted_atac_by_context(tmp_path):
+    sheet = _footprint_sheet(tmp_path)
+    bams = _write_final_bam_manifest(
+        tmp_path,
+        [("atac_rep1", "eye"), ("atac_rep2", "eye"), ("atac_rep3", "wing"), ("atac_rep4", "wing")],
+        row_overrides={"atac_rep4": {"qc_status": "rejected", "notes": "low FRiP"}},
+    )
+
+    output = generate_footprint_config(
+        sample_sheet_path=sheet,
+        final_bam_manifests=[bams],
+        master_manifest_path=_write_master_manifest(tmp_path),
+        output_dir=tmp_path / "configs",
+        project="atlas",
+        run_id="footprints-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+    )
+    config = yaml.safe_load(output.read_text())
+
+    assert output.name == "atlas.footprints.yaml"
+    assert (config["input_stage"], config["start_stage"], config["output_stage"]) == (
+        "master", "master", "footprints")
+    assert config["samples"] == []
+    footprints = config["footprints"]
+    assert footprints["contexts"] == ["eye", "wing"]
+    assert [library["id"] for library in footprints["libraries"]] == [
+        "atac_rep1", "atac_rep2", "atac_rep3"]
+    assert footprints["atacorrect"]["read_shift"] == [4, -5]
+    assert config["provenance"]["excluded_footprint_libraries"] == [
+        {"id": "atac_rep4", "context": "wing", "reason": "low FRiP"}]
+    validate_workflow_config(config)
+    resolve_input_paths(config, tmp_path)
+
+
+def test_footprint_config_rejects_unreviewed_atac(tmp_path):
+    sheet = _footprint_sheet(tmp_path)
+    bams = _write_final_bam_manifest(
+        tmp_path,
+        [("atac_rep1", "eye"), ("atac_rep2", "eye"), ("atac_rep3", "wing"), ("atac_rep4", "wing")],
+        row_overrides={"atac_rep2": {"qc_status": "pending_review"}},
+    )
+
+    with pytest.raises(AcquisitionError, match="pending_review|accepted"):
+        generate_footprint_config(
+            sample_sheet_path=sheet,
+            final_bam_manifests=[bams],
+            master_manifest_path=_write_master_manifest(tmp_path),
+            output_dir=tmp_path / "configs",
+            project="atlas",
+            run_id="footprints-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+        )
+
+
+def test_footprint_config_requires_every_atac_library(tmp_path):
+    sheet = _footprint_sheet(tmp_path)
+    bams = _write_final_bam_manifest(tmp_path, [("atac_rep1", "eye"), ("atac_rep2", "eye")])
+
+    with pytest.raises(AcquisitionError, match="missing ATAC libraries: atac_rep3, atac_rep4"):
+        generate_footprint_config(
+            sample_sheet_path=sheet,
+            final_bam_manifests=[bams],
+            master_manifest_path=_write_master_manifest(tmp_path),
+            output_dir=tmp_path / "configs",
+            project="atlas",
+            run_id="footprints-v1",
             reference_root=tmp_path / "references",
             path_base=tmp_path,
         )

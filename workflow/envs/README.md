@@ -14,3 +14,4 @@ environment directory.
 - `activity_tmm.yaml`: edgeR TMM factors for 10-kb autosomal background counts
 - `catalog_tracks.yaml`: bedtools/coreutils/pyBigWig catalog signal-track construction
 - `final_report.yaml`: deterministic HTML-to-PDF rendering for integrated QC
+- `footprinting.yaml`: samtools and TOBIAS for context-pooled ATAC footprinting

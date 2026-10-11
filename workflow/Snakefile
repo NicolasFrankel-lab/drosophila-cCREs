@@ -38,6 +38,7 @@ START_STAGE = str(config.get("start_stage", INPUT_STAGE))
 OUTPUT_STAGE = validate_stage_selection(START_STAGE, config.get("output_stage"))
 ACTIVITY = config.get("activity")
 CATALOG_IMPORT = config.get("catalog_import")
+FOOTPRINTS = config.get("footprints")
 EXECUTION = config.get("execution", {})
 ALIGNMENT_CHUNK_PAIRS = int(EXECUTION.get("alignment_chunk_pairs", 0))
 CHUNKED_ALIGNMENT_ENABLED = ALIGNMENT_CHUNK_PAIRS > 0
@@ -712,6 +713,47 @@ NEAREST_TSS_LINK_TARGETS = (
     else []
 )
 
+FOOTPRINT_ROOT = f"{RESULT_ROOT}/footprints"
+FOOTPRINT_WORK = f"{WORK_ROOT}/footprints"
+FOOTPRINT_LIBRARIES = (
+    {str(library["id"]): library for library in FOOTPRINTS["libraries"]}
+    if FOOTPRINTS
+    else {}
+)
+FOOTPRINT_CONTEXTS = list(FOOTPRINTS["contexts"]) if FOOTPRINTS else []
+FOOTPRINT_LIBRARY_RE = wildcard_regex(list(FOOTPRINT_LIBRARIES))
+FOOTPRINT_CONTEXT_RE = wildcard_regex(FOOTPRINT_CONTEXTS)
+FOOTPRINT_CONTEXT_LIBRARIES = {
+    context: [
+        library
+        for library, values in FOOTPRINT_LIBRARIES.items()
+        if values["context"] == context
+    ]
+    for context in FOOTPRINT_CONTEXTS
+}
+FOOTPRINT_BAM_VALIDATIONS = {
+    library: f"{RESULT_ROOT}/provenance/footprints/bams/{library}.validated.json"
+    for library in FOOTPRINT_LIBRARIES
+}
+FOOTPRINT_CORRECTED = {
+    context: f"{FOOTPRINT_ROOT}/{context}.corrected.bw" for context in FOOTPRINT_CONTEXTS
+}
+FOOTPRINT_UNCORRECTED = {
+    context: f"{FOOTPRINT_ROOT}/{context}.uncorrected.bw" for context in FOOTPRINT_CONTEXTS
+}
+FOOTPRINT_SCORES = {
+    context: f"{FOOTPRINT_ROOT}/{context}.footprints.bw" for context in FOOTPRINT_CONTEXTS
+}
+FOOTPRINT_REPORTS = {
+    context: f"{FOOTPRINT_ROOT}/qc/{context}.atacorrect.pdf" for context in FOOTPRINT_CONTEXTS
+}
+FOOTPRINT_TARGETS = [
+    *FOOTPRINT_CORRECTED.values(),
+    *FOOTPRINT_UNCORRECTED.values(),
+    *FOOTPRINT_SCORES.values(),
+    *FOOTPRINT_REPORTS.values(),
+]
+
 CHIP_PEAKS = {
     sample: f"{RESULT_ROOT}/peaks/{sample}/{sample}_peaks.broadPeak"
     for sample in CHIP_TREATMENTS
@@ -848,6 +890,7 @@ STAGE_CHECKPOINT_MANIFESTS = {
         "catalog",
         "links",
         "report",
+        "footprints",
     )
 }
 STAGE_RESOLVED_CONFIGS = {
@@ -1009,6 +1052,14 @@ STAGE_CHECKPOINT_ARTIFACTS = {
             "link_artifact",
         ),
     },
+    "footprints": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["footprints"],
+        **named_artifacts(
+            [*FOOTPRINT_BAM_VALIDATIONS.values(), EXTERNAL_MASTER_VALIDATION],
+            "input_validation",
+        ),
+        **named_artifacts(FOOTPRINT_TARGETS, "footprint_artifact"),
+    },
     "report": {
         "resolved_config": STAGE_RESOLVED_CONFIGS["report"],
         "report_html": ACTIVITY_REPORT_HTML,
@@ -1027,6 +1078,12 @@ STAGE_CHECKPOINT_PARAMETERS = {
     },
 }
 
+if FOOTPRINTS:
+    # Only footprint runs record this, so existing stages' checkpoints are unchanged.
+    STAGE_CHECKPOINT_PARAMETERS["footprints"] = {
+        key: value for key, value in FOOTPRINTS.items() if key != "libraries"
+    }
+
 STANDARD_FINAL_TARGETS = MASTER_TARGETS
 if OUTPUT_STAGE == "report":
     FINAL_TARGETS = (
@@ -1044,6 +1101,8 @@ elif OUTPUT_STAGE == "catalog":
     FINAL_TARGETS = ACTIVITY_CATALOG_TARGETS
 elif OUTPUT_STAGE == "quantification":
     FINAL_TARGETS = ACTIVITY_QUANTIFICATION_TARGETS
+elif OUTPUT_STAGE == "footprints":
+    FINAL_TARGETS = FOOTPRINT_TARGETS + [EXTERNAL_MASTER_VALIDATION, RESOLVED_CONFIG]
 elif INPUT_STAGE == "master":
     FINAL_TARGETS = [
         EXTERNAL_MASTER_VALIDATION,
@@ -1082,4 +1141,5 @@ include: "rules/atac_peaks.smk"
 include: "rules/atac_consensus.smk"
 include: "rules/activity.smk"
 include: "rules/links.smk"
+include: "rules/footprints.smk"
 include: "rules/qc.smk"

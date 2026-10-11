@@ -19,6 +19,7 @@ from short_read_processing.configuration import (
     generate_activity_config,
     generate_catalog_links_config,
     generate_configs,
+    generate_footprint_config,
     generate_resume_config,
 )
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA, sample_sheet_accessions
@@ -88,7 +89,11 @@ def main() -> int:
     parser.add_argument("--snakemake-dry-run", action="store_true")
     parser.add_argument(
         "--from-stage",
-        choices=("accessions", *OUTPUT_STAGES, "final-bam"),
+        choices=(
+            "accessions",
+            *(stage for stage in OUTPUT_STAGES if stage != "footprints"),
+            "final-bam",
+        ),
         default="accessions",
         help=(
             "Completed logical boundary to reuse. Reuse is strict and has no "
@@ -100,7 +105,9 @@ def main() -> int:
         choices=OUTPUT_STAGES,
         help=(
             "Stop at this boundary. Defaults to QC from accessions/alignment, "
-            "master from QC/master, and report from quantification/catalog/links."
+            "master from QC/master, and report from quantification/catalog/links. "
+            "footprints (from master, with --final-bam-manifest) runs TOBIAS "
+            "ATAC footprinting."
         ),
     )
     parser.add_argument(
@@ -244,7 +251,17 @@ def main() -> int:
                 parser.error("activity options require --from-stage quantification")
             if args.report_source_root:
                 parser.error("report sources require --from-stage quantification")
-        if args.from_stage == "master":
+        if args.from_stage == "master" and output_stage == "footprints":
+            if not args.master_manifest or not args.final_bam_manifest:
+                parser.error(
+                    "--until-stage footprints requires --master-manifest and the "
+                    "reviewed ATAC --final-bam-manifest"
+                )
+            if args.activity_bam_manifest or args.report_source_root:
+                parser.error(
+                    "activity BAM manifests and report sources do not apply to footprints"
+                )
+        elif args.from_stage == "master":
             if not args.master_manifest:
                 parser.error("--from-stage master requires --master-manifest")
             if args.final_bam_manifest:
@@ -302,7 +319,7 @@ def main() -> int:
             parser.error(f"--from-stage {args.from_stage} requires --checkpoint-manifest")
 
     generates_activity_config = (
-        args.from_stage == "master" and output_stage != "master"
+        args.from_stage == "master" and output_stage not in {"master", "footprints"}
     ) or (args.from_stage == "quantification" and not args.checkpoint_manifest)
     if args.h3k27ac_activity_threshold != 0.60 and not generates_activity_config:
         parser.error(
@@ -372,6 +389,21 @@ def main() -> int:
             generate_catalog_links_config(
                 sample_sheet_path=sample_sheet,
                 catalog_manifest_path=args.catalog_manifest.resolve(),
+                output_dir=args.config_dir.resolve(),
+                project=args.project,
+                run_id=args.run_id,
+                reference_root=args.reference_root,
+                path_base=REPO_ROOT,
+                schema_path=args.schema.resolve(),
+                genome=args.genome,
+            )
+        ]
+    elif output_stage == "footprints":
+        configs = [
+            generate_footprint_config(
+                sample_sheet_path=sample_sheet,
+                final_bam_manifests=[args.final_bam_manifest.resolve()],
+                master_manifest_path=args.master_manifest.resolve(),
                 output_dir=args.config_dir.resolve(),
                 project=args.project,
                 run_id=args.run_id,

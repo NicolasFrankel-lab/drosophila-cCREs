@@ -100,6 +100,19 @@ digraph workflow {
     {rank=same; browser; sources; catalogbundle;}
   }
 
+  subgraph cluster_footprints {
+    label="Optional invocation: reviewed ATAC BAMs and frozen master to TOBIAS footprints";
+    color="#c9b38a";
+    style="rounded";
+    margin=14;
+
+    fpmerge [label="Validate + pool accepted\nATAC BAMs per context", fillcolor="#fbf1dc"];
+    fpcorrect [label="TOBIAS ATACorrect\nTn5-bias-corrected signal", fillcolor="#f6e6c4"];
+    fpscore [label="TOBIAS ScoreBigwig\nfootprint scores (footprints checkpoint)", fillcolor="#f1dcab"];
+
+    fpmerge -> fpcorrect -> fpscore;
+  }
+
   reviewtable -> review;
   reviewedbam -> context;
   qccheckpoint -> context;
@@ -107,4 +120,6 @@ digraph workflow {
   mastermanifest -> validate;
   reference -> validate [style=dashed, constraint=false];
   reference -> nearestwide [style=dashed, constraint=false];
+  reviewedbam -> fpmerge;
+  mastermanifest -> fpcorrect;
 }

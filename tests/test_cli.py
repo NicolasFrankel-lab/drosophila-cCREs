@@ -380,3 +380,24 @@ def test_activity_threshold_is_rejected_when_invalid_or_unused(
         run_pipeline_main()
 
     assert error.value.code == 2
+
+
+def test_footprints_require_master_and_reviewed_bam_manifests(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    master = tmp_path / "master.tsv"
+    master.write_text("")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_pipeline.py", str(sheet), "--from-stage", "master", "--until-stage", "footprints",
+         "--master-manifest", str(master)],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2

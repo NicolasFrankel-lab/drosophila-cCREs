@@ -25,6 +25,19 @@ The workflow has three invocations separated by an explicit library-QC gate:
    each enhancer-like element to its nearest annotated TSS, and render an
    integrated QC report.
 
+An optional fourth invocation computes per-context TOBIAS ATAC footprints on the
+master registry.
+
+## Archived outputs
+
+The processed atlas used in the enhancer pleiotropy manuscript (all outputs
+except BAM files) and its TOBIAS footprinting tracks are archived on Zenodo:
+[10.5281/zenodo.23296290](https://doi.org/10.5281/zenodo.23296290). The models
+trained on it are at
+[enhancer_pleiotropy_model](https://github.com/laiker96/enhancer_pleiotropy_model)
+([10.5281/zenodo.23287237](https://doi.org/10.5281/zenodo.23287237)). BAM files
+can be regenerated from the accessions in `resources/atlas_samples.tsv`.
+
 ## Installation
 
 Prerequisites are a POSIX shell, Git and `mamba`. Keep every environment inside
@@ -111,6 +124,22 @@ python src/run_pipeline.py resources/atlas_samples.tsv \
   --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
   --until-stage report --cores 16
 ```
+
+**5. Optional: TOBIAS footprinting** (per context, on the master registry):
+
+```bash
+python src/run_pipeline.py resources/atlas_samples.tsv \
+  --from-stage master --until-stage footprints \
+  --master-manifest \
+    results/drosophila-atlas/master-v1/provenance/manifests/master-dhs.tsv \
+  --final-bam-manifest data/reviewed/atac.reviewed.tsv \
+  --project drosophila-atlas --run-id footprints-v1 --genome dm6 --cores 16
+```
+
+The accepted ATAC libraries of each context are pooled, corrected for Tn5
+insertion bias with TOBIAS ATACorrect over the master DHS intervals, and scored
+with TOBIAS ScoreBigwig (TOBIAS 0.17.3 defaults, recorded in the resolved
+configuration).
 
 The H3K27ac activity cutoff defaults to a background percentile of 0.60. Pass
 `--h3k27ac-activity-threshold T` (0 < T < 1) to this command to use another
@@ -280,6 +309,7 @@ paths.
 | `catalog` | activity calls, long/wide/per-context tables, BED/BigWig tracks, IGV sessions |
 | `links` | promoter registry and the wide nearest-TSS enhancer table |
 | `report` | integrated, checksummed HTML/PDF QC report |
+| `footprints` | per-context Tn5-bias-corrected ATAC signal and TOBIAS footprint scores (optional; from `master`) |
 
 Re-running the same `--project`/`--run-id` resumes from valid outputs;
 Snakemake owns completeness and profiles keep `rerun-incomplete: true`.
@@ -299,7 +329,7 @@ recomputation.
 | `trimming` | trimming `--checkpoint-manifest` | trimming, alignment or QC (same run) |
 | `alignment` | alignment checkpoint or `--final-bam-manifest` | alignment or QC |
 | `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
-| `master` | `--master-manifest`; reviewed BAM manifests when continuing | master through report |
+| `master` | `--master-manifest`; reviewed BAM manifests when continuing | master through report, or footprints with the reviewed ATAC `--final-bam-manifest` |
 | `quantification` | quantification checkpoint | quantification through report |
 | `catalog` | catalog checkpoint, or `--catalog-manifest` for an exported catalog | catalog through report; links only from a manifest |
 | `links` | links checkpoint | links or report |
@@ -347,6 +377,8 @@ results/<project>/<run_id>/
 ├── activity/links/nearest_tss/       promoters.tsv.gz, enhancer_nearest_tss_candidates_wide.tsv.gz,
 │                                     and their metrics
 ├── activity/report/                  integrated_qc_report.{html,pdf,json}
+├── footprints/                       <context>.corrected.bw, <context>.uncorrected.bw,
+│                                     <context>.footprints.bw, qc/<context>.atacorrect.pdf
 └── provenance/                       resolved configs and stage checkpoints
 ```
 
