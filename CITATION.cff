@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this pipeline or its outputs, please cite the manuscript (reference to be added on publication) and the Zenodo record below."
+title: "drosophila-cCREs: a cis-regulatory element atlas pipeline for Drosophila ATAC-seq and H3K27ac data"
+type: software
+authors:
+  - family-names: Laiker
+    given-names: Ian
+  - name: Frankel lab
+repository-code: "https://github.com/laiker96/drosophila-cCREs"
+keywords: [Drosophila, ATAC-seq, H3K27ac, cis-regulatory elements, enhancers, TOBIAS, Snakemake]
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23296290
+    description: "Processed atlas outputs and TOBIAS footprinting produced by this pipeline (Zenodo, version v4)"
+references:
+  - type: data
+    title: "Drosophila cis-regulatory atlas across eight developmental contexts: processed ATAC-seq and H3K27ac outputs and TOBIAS footprinting"
+    authors:
+      - family-names: Laiker
+        given-names: Ian
+      - family-names: Frankel
+        given-names: Nicolás
+    doi: 10.5281/zenodo.23296290
+    version: v4
+    publisher:
+      name: Zenodo
+    year: 2026
+  - type: data
+    title: "Enhancer pleiotropy model: trained checkpoints, attribution maps and training data"
+    authors:
+      - family-names: Laiker
+        given-names: Ian
+      - family-names: Frankel
+        given-names: Nicolás
+    doi: 10.5281/zenodo.23287237
+    version: 1.0.0
+    publisher:
+      name: Zenodo
+    year: 2026
